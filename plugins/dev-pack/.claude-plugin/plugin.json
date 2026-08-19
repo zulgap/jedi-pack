@@ -1,0 +1,8 @@
+{
+  "name": "dev-pack",
+  "description": "개발자 팩 — start-dev·wrapup-dev (dev/master role 전용, 노션 Dev Task Board 연동)",
+  "author": {
+    "name": "ZULGAP"
+  },
+  "homepage": "https://github.com/zulgap/claude-team-pack"
+}

@@ -1,0 +1,22 @@
+# 저장소에 들어가는 줄바꿈을 고정한다. 개인 git 설정(core.autocrlf)이 무엇이든 여기가 이긴다.
+#
+# 🔴 아래 3개 예외는 지우지 말 것 — 각각 실제 사고를 막고 있다.
+#    2026-08-08 실사고: 이 파일이 없는 줄 알고 통째로 덮어써 예외 3줄을 지웠다가 되살렸다.
+#    (커밋 전 numstat 이 "13 추가 / 6 삭제"로 나와서야 기존 파일인 걸 알았다)
+#
+# 기본값 — 명시 예외가 없는 모든 텍스트 파일은 저장소에 LF 로 들어간다.
+#
+# 왜 기본값을 박았나 (2026-08-08 추가):
+#   PR #138 을 커밋하기 직전 CRLF 를 걱정해 core.autocrlf 를 만졌더니 워킹트리의 CRLF 가
+#   그대로 실려 **101개 파일이 통째로 바뀌어 커밋**됐다(#139 로 원복). CRLF 를 막으려던
+#   조치가 CRLF 를 만들었다. 이 한 줄이 있으면 같은 사고가 구조적으로 불가능해진다.
+#   넣는 시점에 레포는 이미 전부 LF 였고(실측: 텍스트 114개 중 줄끝 CRLF 0) 열린 PR 도
+#   0건이라 바뀌는 바이트가 없었다 — 그래서 지금이 적기였다.
+* text=auto eol=lf
+
+# cmd.exe batch must be CRLF (UTF-8 chcp parser eats first byte on LF) — v1.4 재발방지
+*.bat text eol=crlf
+# install.sh must be LF (CRLF shebang = /bin/bash^M bad interpreter on macOS)
+*.sh text eol=lf
+# .command (macOS double-click) is bash too — same LF rule
+*.command text eol=lf

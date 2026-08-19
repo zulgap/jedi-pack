@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>{{제목}} — {{채널}} {{N}}편</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  /* ══════════════════════════════════════════════════════════════
+     🎨 팔레트 — 채널 정본 `palette` 절의 값으로 «전부» 교체한다.
+        아래는 회색조 기본값이다. 이 상태로 납품하지 말 것.
+        정본에 palette 가 없으면 만들지 말고 사람에게 물어본다
+        (그럴듯한 색을 채우면 나중에 전량을 고쳐야 한다).
+     ══════════════════════════════════════════════════════════════ */
+  :root{
+    --bg:#0a0a0a;        /* 배경 */
+    --fg:#ffffff;        /* 본문 */
+    --dim:#a1a1aa;       /* 보조 텍스트 */
+    --accent:#9ca3af;    /* 강조 — 채널 대표색 */
+    --bad:#fca5a5;       /* 경고·부정 */
+    --good:#a7f3d0;      /* 긍정 */
+    --line:#26262b;      /* 구분선·테두리 */
+    --card:#141417;      /* 카드 배경 */
+
+    /* 🔴 세이프존 — 채널 정본 `production` 의 값. 아래 .slide padding-bottom 과 #guide height
+       두 곳이 «같은 값» 이어야 한다. 한쪽만 바꾸면 측정은 통과하는데 화면은 가려진다. */
+    --safe:360px;
+  }
+
+  html,body{ height:100%; background:#000; overflow:hidden;
+    font-family:'Pretendard','Malgun Gothic','맑은 고딕',system-ui,sans-serif; }
+
+  /* 무대는 1920×1080 고정. 창 크기에 맞춰 통째로 scale 한다 —
+     반응형이 아니라 «고정 비율 산출물» 이다(앱 크롬이 아니다). */
+  #stage{ position:absolute; top:50%; left:50%; width:1920px; height:1080px;
+    transform-origin:center center; background:var(--bg); color:var(--fg); }
+
+  /* 🔴 padding-bottom 이 세이프존이다. 줄이지 말 것 — 줄이면 얼굴에 가려진다 */
+  .slide{ display:none; width:100%; height:100%; padding:96px 130px var(--safe);
+    flex-direction:column; justify-content:center; }
+  .slide.on{ display:flex; }
+
+  /* ════ F = 얼굴 없음 모드 ════
+     @AI:INTENT 웹캠 없이 찍으면 비워둔 하단이 «검은 여백»으로 남는다(세이프존 360이면 화면의 34%).
+       그때만 여백을 걷어 내용을 화면 가운데로 돌린다. 슬라이드 내용은 건드리지 않는다.
+     🔴 기본값은 PiP 모드다. localStorage 에 저장하지 않는다 — 새로 열면 «항상» PiP 로
+       시작해야 설계가 조용히 바뀌지 않는다. */
+  body.noface .slide{ padding-bottom:96px; }
+  #modetoast{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    background:#141417; border:2px solid var(--accent); border-radius:16px;
+    padding:28px 44px; font-size:38px; font-weight:800; color:var(--fg);
+    opacity:0; pointer-events:none; transition:opacity .18s; z-index:50; }
+  #modetoast.on{ opacity:1; }
+
+  /* ── 타이포 (세이프존에 맞춘 값 — 키우기 전에 반드시 재측정) ── */
+  .kicker{ font-size:32px; color:var(--accent); font-weight:800; margin-bottom:28px; }
+  h1{ font-size:98px; font-weight:900; line-height:1.16; letter-spacing:-.02em; }
+  h2{ font-size:72px; font-weight:800; line-height:1.24; letter-spacing:-.02em; }
+  h3{ font-size:50px; font-weight:800; line-height:1.3; }
+  .sub{ font-size:38px; color:var(--dim); margin-top:30px; line-height:1.5; }
+  .big{ font-size:140px; font-weight:900; color:var(--accent); line-height:1; }
+  .em{ color:var(--accent); font-weight:900; }
+  .warn{ color:var(--bad); font-weight:900; }
+  .ok{ color:var(--good); font-weight:900; }
+  .note{ font-size:27px; color:var(--dim); margin-top:26px; }
+  .src{ font-size:23px; color:#71717a; margin-top:18px; }   /* 숫자에는 출처를 붙인다 */
+
+  /* ── 목록 · 카드 ── */
+  ol.steps{ margin-top:34px; font-size:40px; line-height:1.5; padding-left:1.2em; }
+  ol.steps li{ margin-bottom:20px; }
+  .vs{ display:grid; grid-template-columns:1fr 1fr; gap:36px; margin-top:36px; }
+  .vs > div{ background:var(--card); border:2px solid var(--line); border-radius:16px; padding:34px 38px; }
+  .vs h3{ margin-bottom:18px; }
+
+  /* ── 터미널·코드 (증거 화면) ── */
+  .term{ background:#0c0c0f; border:2px solid var(--line); border-radius:12px;
+    padding:26px 32px; margin-top:12px;
+    font-family:'D2Coding','Consolas','Courier New',monospace;
+    font-size:25px; line-height:1.45; color:#d4d4d8; }
+
+  /* ── 등장 애니메이션 (⚠️ provisional — 낭독 속도와 맞는지 실촬영 후 재산정) ── */
+  @keyframes wipe{ from{ opacity:0; transform:translateY(18px) } to{ opacity:1; transform:none } }
+  .slide.on .flow div{ animation: wipe .38s both; }
+  .slide.on .flow div:nth-child(1){ animation-delay:.24s }
+  .slide.on .flow div:nth-child(2){ animation-delay:.46s }
+  .slide.on .flow div:nth-child(3){ animation-delay:.68s }
+  .slide.on .flow div:nth-child(4){ animation-delay:.90s }
+
+  /* ── 크롬 ──
+     🔴 #idx 는 «좌» 하단이다. PiP 가 우하단을 상시 점유하므로 우측에 두면 정면 충돌한다. */
+  #bar{ position:absolute; left:0; bottom:0; height:8px; background:var(--accent); width:0; transition:width .2s; }
+  #idx{ position:absolute; left:44px; bottom:36px; font-size:26px; color:#52525b; }
+
+  /* ── 제작 확인용 가이드 (G 키) · 🔴 촬영 중에는 끈다 ── */
+  #guide{ position:absolute; left:0; right:0; bottom:0; height:var(--safe); display:none;
+    background:rgba(252,165,165,.10); border-top:2px dashed rgba(252,165,165,.5); }
+  #guide.on{ display:block; }
+  #guide::after{ content:'⚠️ PiP 세이프존'; position:absolute; left:44px; top:14px;
+    font-size:24px; color:var(--bad); }
+  /* PiP 크기·마진도 정본 production 값으로 교체 */
+  #pip{ position:absolute; right:48px; bottom:48px; width:440px; height:248px;
+    border:2px dashed rgba(161,161,170,.45); border-radius:12px; display:none;
+    align-items:center; justify-content:center; font-size:26px; color:#71717a; }
+  #pip.on{ display:flex; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+
+  <!-- ══════════════════════════════════════════════════════════════
+       슬라이드 한 장 = <section class="slide">
+
+       data-script  낭독할 대사. 문단 구분은 «|» . 프롬프터가 이걸 읽는다
+       data-note    연출 지시. 프롬프터가 빨강으로 따로 띄우고 «낭독 대상에서 뺀다»
+
+       🔴 대사를 화면에 그대로 쓰지 않는다 — 읽는 것은 프롬프터, 보는 것은 슬라이드다
+       ══════════════════════════════════════════════════════════════ -->
+
+  <section class="slide"
+           data-script="여기에 이 장에서 읽을 대사를 넣습니다.|문단을 나누려면 세로줄로 구분합니다."
+           data-note="여기엔 연출 지시를 넣습니다 (예: 여기서 화면 캡처를 띄운다)">
+    <div class="kicker">{{구간 라벨}}</div>
+    <h1>{{제목}}</h1>
+    <p class="sub">{{한 줄 설명}}</p>
+  </section>
+
+  <section class="slide" data-script="두 번째 장 대사.">
+    <h2>{{소제목}}</h2>
+    <ol class="steps">
+      <li>{{항목 1}}</li>
+      <li>{{항목 2}}</li>
+      <li>{{항목 3}}</li>
+    </ol>
+    <p class="src">출처: {{매체명·측정일}}</p>
+  </section>
+
+</div>
+
+<div id="pip">PiP</div>
+<div id="guide"></div>
+<div id="bar"></div>
+<div id="idx">1 / 1</div>
+<div id="modetoast"></div>
+
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  const stage = document.getElementById('stage');
+  const bar = document.getElementById('bar');
+  const idx = document.getElementById('idx');
+  const guide = document.getElementById('guide');
+  const pip = document.getElementById('pip');
+  let i = 0;
+
+  function fit(){
+    const s = Math.min(innerWidth / 1920, innerHeight / 1080);
+    stage.style.transform = `translate(-50%,-50%) scale(${s})`;
+  }
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('on', k === i));
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    idx.textContent = (i + 1) + ' / ' + slides.length;
+  }
+  addEventListener('resize', fit);
+  addEventListener('keydown', e => {
+    if (['ArrowRight',' ','PageDown','Enter'].includes(e.key)) { e.preventDefault(); show(i + 1); }
+    if (['ArrowLeft','PageUp','Backspace'].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    if (e.key === 'Home') show(0);
+    if (e.key === 'End') show(slides.length - 1);
+    if (e.key === 'g' || e.key === 'G') { guide.classList.toggle('on'); pip.classList.toggle('on'); }
+    // F = 얼굴 없음 모드. 🔴 기본은 PiP — 저장하지 않으므로 새로 열면 항상 PiP 로 돌아온다.
+    //    토스트는 1.2초 뒤 사라진다(상시 표시하면 녹화에 그대로 찍힌다).
+    if (e.key === 'f' || e.key === 'F') {
+      var off = document.body.classList.toggle('noface');
+      var t = document.getElementById('modetoast');
+      t.textContent = off ? '얼굴 없음 모드 — 하단 여백 없음' : 'PiP 모드 — 하단 비움';
+      t.classList.add('on');
+      clearTimeout(window.__mt); window.__mt = setTimeout(function(){ t.classList.remove('on'); }, 1200);
+      fit();
+    }
+  });
+  fit(); show(0);
+</script>
+<script src="./prompter.js"></script>
+</body>
+</html>

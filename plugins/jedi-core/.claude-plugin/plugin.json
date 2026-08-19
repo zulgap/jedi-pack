@@ -1,0 +1,8 @@
+{
+  "name": "jedi-core",
+  "description": "제디 공용 코어 — 스킬(목록)·시작·저장·이미지·키워드·인입·썸네일 스킬 + 노션·PPT·한글 MCP (전 테넌트 공유, 스킬 패키징 프로토콜 준수)",
+  "author": {
+    "name": "ZULGAP"
+  },
+  "homepage": "https://github.com/zulgap/claude-team-pack"
+}

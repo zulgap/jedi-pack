@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<!-- 레이아웃 A — 하단 2줄 임팩트 (기본). 실측: 한방언니 전부·고객사 채널 롱폼·가연 롱폼
+     @AI:DEPENDS card-renderer(Chromium)가 Google Fonts 웹폰트 로드 → 한글 Black 900 픽셀 정확 -->
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+/* {{BASE_CSS}} */
+html, body { width: 1280px; height: 720px; overflow: hidden; }
+.thumb { position: relative; width: 1280px; height: 720px; overflow: hidden; background: #111; }
+
+/* 하단 스크림: 2줄 텍스트 영역 대비 (실측 하단 약 42%) */
+.scrim-bottom { height: 360px; }
+
+/* 우측 진행자 얼굴 (선택) — 있으면 오른쪽 32%, 없으면 배경만 */
+.host { position: absolute; right: 0; top: 0; height: 100%; width: 34%;
+  object-fit: cover; object-position: top center; }
+.host-fade { position: absolute; right: 34%; top: 0; height: 100%; width: 90px;
+  background: linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 100%); } /* 필요시 경계 페이드 */
+
+/* 제목: 하단 2줄. 실측 = 프레임 높이 16~18% ≈ 116px */
+.title-box { position: absolute; left: 56px; right: 56px; bottom: 40px; }
+.title { font-size: 116px; }
+.title .l2 { display: block; }   /* 2줄 강제 분리 (윗줄 흰 / 아랫줄 강조) */
+
+/* 서브카피(선택): 제목 위 작은 맥락 자막 */
+.subtitle { position: absolute; left: 56px; right: 400px; }
+</style>
+</head>
+<body>
+  <div class="thumb {{ACC_CLASS}}">
+    <img class="bg" src="{{background_url}}" alt="">
+    {{#if host_url}}<img class="host" src="{{host_url}}" alt=""><div class="host-fade"></div>{{/if}}
+    <div class="scrim-bottom"></div>
+    {{QUOTES}}
+    {{#if subtitle}}<div class="subtitle" style="bottom:290px">{{subtitle}}</div>{{/if}}
+    <div class="title-box"><div class="title" id="title">{{{title_html}}}</div></div>
+    {{#if role}}<div class="role-label">({{role}})</div>{{/if}}
+    {{#if channel}}<div class="watermark">{{channel}}</div>{{/if}}
+    <div class="frame"></div>
+  </div>
+  <script>
+    // @AI:INTENT auto-fit — 제목을 폭에 맞춰 **양방향** 조절(축소 + 확대).
+    //   2026-07-30: 기존엔 축소만 해서 짧은 카피가 116px에 머물러 화면 절반만 채웠다.
+    //   실측 근거 — 한방언니(43만)는 글자가 폭의 90%를 채우는데 우리는 50%였다.
+    //   rules.md 규칙 1 「화면을 채운다」(85%, p=0.0001)와도 같은 방향.
+    (function () {
+      function fit() {
+        var el = document.getElementById('title'); if (!el) return;
+        var box = el.parentElement;                 // title-box
+        // @AI:CONSTRAINT 글자 영역은 화면 세로의 35~40%를 넘지 않는다 — 넘으면 배경 이미지가 안 보인다.
+        //   실측: 한방언니(43만)는 글자가 하단 35~40%, 상단 60%는 이미지가 온전히 보인다.
+        //   2026-07-30에 400px(56%)로 잡았다가 "이미지가 하나도 안 보인다" 지적 → 250px(35%)로 정정.
+        //   서브카피(제목의 55%)까지 더하면 총 42~45%가 된다.
+        var maxH = 250;
+        var size = 116, floor = 60, ceil = 210;     // ceil = 짧은 카피가 커질 수 있는 상한
+        function over() { return el.scrollWidth > box.clientWidth || el.scrollHeight > maxH; }
+        el.style.fontSize = size + 'px';
+        if (over()) {
+          while (over() && size > floor) { size -= 3; el.style.fontSize = size + 'px'; }
+        } else {
+          // 여유가 있으면 폭을 채울 때까지 키운다 — 넘치는 순간 한 스텝 되돌림
+          while (!over() && size < ceil) { size += 3; el.style.fontSize = size + 'px'; }
+          if (over()) { size -= 3; el.style.fontSize = size + 'px'; }
+        }
+        // @AI:INTENT 서브카피는 제목 크기에 **비례**해야 한다 — 정본(노션 썸네일 가이드라인 §2-C)이 규정한
+        //   서브의 역할은 "메인을 사례로 고정"(인물·시간·상황)이라 **읽혀야 기능한다**.
+        //   34px 고정일 때 메인이 200px까지 커지면 비율 17%로 떨어져 신뢰 장치가 죽었다. (2026-07-30)
+        //   실측 근거: 지식브런치는 서브가 메인의 약 70%. 우리는 2줄 제목이라 55%로 잡는다.
+        // @AI:DEPENDS 제목이 커지면 서브(고정 bottom:290px)와 겹치므로 제목 높이에 맞춰 밀어올린다.
+        // @AI:CONSTRAINT 비율보다 "한 줄 유지"가 우선 제약이다 — 서브가 2줄로 접히면
+        //   높이가 배로 늘어 인물 얼굴을 덮는다(2026-07-30 실측). 정본 §2-C의 서브 길이는 14~22자라
+        //   0.55배를 그대로 쓰면 대부분 접힌다 → 목표 크기에서 시작해 한 줄에 맞을 때까지 축소.
+        //   하한 44px = 1280폭에서 읽히는 최소치.
+        var sub = document.querySelector('.subtitle');
+        if (sub) {
+          // @AI:DEPENDS 폭(scrollWidth)으로는 못 잰다 — 넘치면 자동 줄바꿈돼 scrollWidth가 clientWidth와 같아진다.
+          //   2줄 여부는 **높이**로만 판별된다(한 줄 ≈ ss×1.0, 두 줄 ≈ ss×2.0 → 임계 1.4).
+          var ss = Math.round(size * 0.55), sfloor = 44;
+          sub.style.fontSize = ss + 'px';
+          while (sub.scrollHeight > ss * 1.4 && ss > sfloor) {
+            ss -= 2; sub.style.fontSize = ss + 'px';
+          }
+          sub.style.bottom = (40 + el.scrollHeight + 18) + 'px';
+        }
+      }
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+      else window.addEventListener('load', fit);
+      setTimeout(fit, 400);
+    })();
+  </script>
+</body>
+</html>
