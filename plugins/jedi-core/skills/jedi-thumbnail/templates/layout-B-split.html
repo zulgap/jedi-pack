@@ -15,7 +15,10 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
 
 /* 제목: 왼쪽 절반, 세로 중앙, 2~3줄. 실측 ≈ 92px */
 .title-box { position: absolute; left: 58px; top: 50%; transform: translateY(-50%); width: 660px; }
-.title { font-size: 92px; }
+/* @AI:CONSTRAINT nowrap 이 auto-fit 의 전제다 — 줄바꿈을 허용하면 scrollWidth 가 clientWidth 와 같아져
+   폭 넘침을 영영 감지하지 못하고, 폰트가 높이 상한까지 커지며 줄이 3~4줄로 갈라진다(2026-08-20 실측).
+   줄바꿈은 --title 의 `|` 로 사람이 정한다 = 이 스킬의 설계 계약. 브라우저가 임의로 접으면 안 된다. */
+.title { font-size: 92px; white-space: nowrap; }
 .title .l2 { display: block; }
 
 /* 서브카피: 제목 아래 (선택) */
@@ -43,6 +46,9 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
         var box = el.parentElement;                 // title-box (width 660)
         var maxH = 420;                             // 좌측 텍스트 세로 상한 (화면 58%)
         var size = 92, floor = 44, ceil = 150;
+        // @AI:DEPENDS 이 폭 비교는 `.title { white-space: nowrap }` 이 있어야만 성립한다.
+        //   줄바꿈이 허용되면 scrollWidth === clientWidth 가 되어 이 항이 항상 false 가 되고,
+        //   높이 항만 남아 폰트가 maxH 를 채울 때까지 커진다(= 2줄 카피가 3~4줄로 갈라진 원인).
         function over() { return el.scrollWidth > box.clientWidth || el.scrollHeight > maxH; }
         el.style.fontSize = size + 'px';
         if (over()) {
@@ -55,11 +61,18 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
         //   title-box가 세로 중앙(top:50% translateY(-50%))이므로 그 하단 좌표를 계산해서 얹는다.
         var sub = document.querySelector('.subtitle');
         if (sub) {
-          var ss = Math.round(size * 0.5), sfloor = 38;
+          // @AI:INTENT --sub-size / --sub-gap 가 오면 자동 계산 대신 그 값을 쓴다 (레이아웃 A와 동일 규약).
+          var cs = getComputedStyle(document.documentElement);
+          var fixedSs = parseInt(cs.getPropertyValue('--sub-size'), 10);
+          var gap = parseInt(cs.getPropertyValue('--sub-gap'), 10);
+          if (!(gap > 0)) gap = 24;
+          var ss = (fixedSs > 0) ? fixedSs : Math.round(size * 0.5), sfloor = 38;
           sub.style.fontSize = ss + 'px';
-          while (sub.scrollHeight > ss * 1.4 && ss > sfloor) { ss -= 2; sub.style.fontSize = ss + 'px'; }
+          if (!(fixedSs > 0)) {
+            while (sub.scrollHeight > ss * 1.4 && ss > sfloor) { ss -= 2; sub.style.fontSize = ss + 'px'; }
+          }
           var boxBottom = (720 / 2) + (el.scrollHeight / 2);   // title-box 하단 y좌표
-          sub.style.bottom = Math.max(30, 720 - boxBottom - ss - 24) + 'px';
+          sub.style.bottom = Math.max(30, 720 - boxBottom - ss - gap) + 'px';
         }
       }
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);

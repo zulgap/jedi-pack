@@ -75,14 +75,24 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
         //   하한 44px = 1280폭에서 읽히는 최소치.
         var sub = document.querySelector('.subtitle');
         if (sub) {
+          // @AI:INTENT --sub-size / --sub-gap 가 오면 자동 계산 대신 그 값을 쓴다 (compose-thumbnail.mjs 가 CSS 변수로 주입).
+          //   지정값이 없으면 아래 자동 계산이 그대로 돌아 기존 결과가 바뀌지 않는다.
+          var cs = getComputedStyle(document.documentElement);
+          var fixedSs = parseInt(cs.getPropertyValue('--sub-size'), 10);
+          var gap = parseInt(cs.getPropertyValue('--sub-gap'), 10);
+          if (!(gap > 0)) gap = 18;
           // @AI:DEPENDS 폭(scrollWidth)으로는 못 잰다 — 넘치면 자동 줄바꿈돼 scrollWidth가 clientWidth와 같아진다.
           //   2줄 여부는 **높이**로만 판별된다(한 줄 ≈ ss×1.0, 두 줄 ≈ ss×2.0 → 임계 1.4).
-          var ss = Math.round(size * 0.55), sfloor = 44;
+          var ss = (fixedSs > 0) ? fixedSs : Math.round(size * 0.55), sfloor = 44;
           sub.style.fontSize = ss + 'px';
-          while (sub.scrollHeight > ss * 1.4 && ss > sfloor) {
-            ss -= 2; sub.style.fontSize = ss + 'px';
+          // @AI:CONSTRAINT --sub-size 를 준 건 사람이 크기를 확정한 것이므로 축소 루프를 돌리지 않는다.
+          //   (자동 계산일 때만 "한 줄 유지"를 위해 줄인다.)
+          if (!(fixedSs > 0)) {
+            while (sub.scrollHeight > ss * 1.4 && ss > sfloor) {
+              ss -= 2; sub.style.fontSize = ss + 'px';
+            }
           }
-          sub.style.bottom = (40 + el.scrollHeight + 18) + 'px';
+          sub.style.bottom = (40 + el.scrollHeight + gap) + 'px';
         }
       }
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);

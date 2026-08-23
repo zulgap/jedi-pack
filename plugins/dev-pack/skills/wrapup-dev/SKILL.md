@@ -39,7 +39,7 @@ Call `notion-create-pages`:
   ```
   (never hardcode — the DB differs per company. If empty, ask the boss for onboarding)
 - **properties**:
-  - `세션` (title): one-line English title of today's work (e.g. "Project X: keyword list page skeleton")
+  - `세션` (title): one-line English title of today's work (e.g. "RPGlobal: keyword list page skeleton")
   - `작성자`: name from Step 1 (omit if empty)
   - `date:날짜:start`: today (YYYY-MM-DD), `date:날짜:is_datetime`: 0
   - `유형`: `개발`

@@ -163,3 +163,44 @@ test('[회귀] 3개 레이아웃 모두 양방향 auto-fit을 갖는다', () => 
     assert.match(html, /ceil/, `${layout}: 확대 로직(ceil) 누락 — 축소만 하면 짧은 카피가 폭을 못 채운다`);
   }
 });
+
+// ── 회귀 가드: 2026-08-20 수리 항목 ──────────────────────
+test('[회귀] 레이아웃 B의 제목이 nowrap이다 (폭 판정의 전제)', () => {
+  // nowrap이 없으면 줄바꿈 시 scrollWidth === clientWidth 가 되어 폭 넘침을 영영 못 재고,
+  // 폰트가 높이 상한까지 커지며 2줄 카피가 3~4줄로 갈라진다.
+  const { html } = assembleHtml({ ...BASE, layout: 'B' });
+  assert.match(html, /\.title\s*\{[^}]*white-space:\s*nowrap/);
+});
+
+test('--sub-size / --sub-gap 이 CSS 변수로 주입된다', () => {
+  const { html } = assembleHtml({ ...BASE, layout: 'A', 'sub-size': '52', 'sub-gap': '60' });
+  assert.match(html, /--sub-size:\s*52px/);
+  assert.match(html, /--sub-gap:\s*60px/);
+});
+
+// @AI:DEPENDS 템플릿 JS 자체가 `getPropertyValue('--sub-size')` 라는 문자열을 갖고 있으므로
+//   변수명만으로 검사하면 항상 걸린다. **주입된 선언**(`--sub-size: 52px`)만 골라 본다.
+const DECL = { size: /--sub-size:\s*\d+px/, gap: /--sub-gap:\s*\d+px/ };
+
+test('--sub-size / --sub-gap 미지정 시 변수를 주입하지 않는다 (기존 자동 계산 보존)', () => {
+  const { html } = assembleHtml({ ...BASE, layout: 'A' });
+  assert.doesNotMatch(html, DECL.size);
+  assert.doesNotMatch(html, DECL.gap);
+});
+
+test('[보안] --sub-size 에 정수가 아닌 값이 오면 무시한다 (CSS 주입 차단)', () => {
+  // `52px} .thumb{display:none` 같은 문자열이 그대로 보간되면 :root{} 밖으로 빠져나가 임의 CSS가 된다.
+  for (const bad of ['52px} .thumb{display:none', '-10', '0', 'abc', '12.5']) {
+    const { html } = assembleHtml({ ...BASE, layout: 'A', 'sub-size': bad });
+    assert.doesNotMatch(html, DECL.size, `주입 차단 실패: ${bad}`);
+    assert.doesNotMatch(html, /display:none/, `주입 차단 실패(CSS 탈출): ${bad}`);
+  }
+});
+
+test('A·B 템플릿이 --sub-size / --sub-gap 을 읽는다', () => {
+  for (const layout of ['A', 'B']) {
+    const { html } = assembleHtml({ ...BASE, layout });
+    assert.match(html, /getPropertyValue\('--sub-size'\)/, `${layout}: --sub-size 미참조`);
+    assert.match(html, /getPropertyValue\('--sub-gap'\)/, `${layout}: --sub-gap 미참조`);
+  }
+});

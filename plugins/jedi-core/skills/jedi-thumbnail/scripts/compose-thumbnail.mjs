@@ -7,6 +7,7 @@
 //     --subtitle "33세 약사가 5년 만에 다시 상담받은 사연" \
 //     --acc yellow --role 결혼전문가 --channel "<채널명>" \
 //     --host "<진행자 얼굴 image_url>"        (레이아웃 A 우측 인물, 선택) \
+//     --sub-size 52 --sub-gap 60             (서브카피 크기·제목과의 간격, px 정수, 선택) \
 //     --quote "제발 저리가!!@22,14" --quote "!여우?@40,10"   (인물 위 말풍선, x,y=%, ! = 빨강)
 // 출력: 마지막 줄 = 완성 썸네일 image_url
 //
@@ -79,6 +80,18 @@ export function assembleHtml(opts) {
       + `<style>:root{--font-family:${f.css},sans-serif;--font-weight:${f.weight}}</style>`
     : '';
 
+  // @AI:INTENT --sub-size(px) / --sub-gap(px) 로 서브카피 크기·간격을 값으로 지정. 미지정 시 기존 자동 계산 그대로.
+  //   템플릿 JS가 서브의 font-size·bottom을 **인라인 style로 박기 때문에** 바깥 CSS로는 못 이긴다.
+  //   그래서 CSS 변수로 넘기고 템플릿 JS가 그 값을 읽어 쓰게 한다.
+  // @AI:CONSTRAINT 반드시 양의 정수로만 파싱한다 — 문자열을 그대로 보간하면 `:root{}` 밖으로 빠져나가는
+  //   CSS 주입이 된다(실제로 --stroke 에 CSS를 끼워 넣어 서브 크기를 덮는 편법이 쓰이고 있었다, 2026-08-20).
+  const px = (v) => (v !== undefined && /^\d+$/.test(String(v)) && +v > 0 ? `${+v}px` : null);
+  const subSize = px(opts['sub-size']);
+  const subGap = px(opts['sub-gap']);
+  const subVars = (subSize || subGap)
+    ? `<style>:root{${subSize ? `--sub-size:${subSize};` : ''}${subGap ? `--sub-gap:${subGap};` : ''}}</style>`
+    : '';
+
   html = html
     .replace('/* {{BASE_CSS}} */', baseCss)
     .replace(/\{\{ACC_CLASS\}\}/g, accClass)
@@ -95,8 +108,10 @@ export function assembleHtml(opts) {
     .replace(/\{\{role\}\}/g, esc(opts.role || ''))
     .replace(/\{\{channel\}\}/g, esc(opts.channel || ''));
 
-  // 외곽선 두께 + 폰트 override 주입 (head 끝 — 기존 <link>/base CSS보다 뒤라 이게 이긴다)
-  if (strokeVars || fontVars) html = html.replace('</head>', `${fontVars}\n${strokeVars}\n</head>`);
+  // 외곽선 두께 + 폰트 + 서브카피 override 주입 (head 끝 — 기존 <link>/base CSS보다 뒤라 이게 이긴다)
+  if (strokeVars || fontVars || subVars) {
+    html = html.replace('</head>', `${fontVars}\n${strokeVars}\n${subVars}\n</head>`);
+  }
   return { html, width: L.width, height: L.height };
 }
 
