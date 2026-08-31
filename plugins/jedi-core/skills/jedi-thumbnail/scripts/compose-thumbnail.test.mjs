@@ -204,3 +204,107 @@ test('A·B 템플릿이 --sub-size / --sub-gap 을 읽는다', () => {
     assert.match(html, /getPropertyValue\('--sub-gap'\)/, `${layout}: --sub-gap 미참조`);
   }
 });
+
+// ── 지목 세트: --tag / --arrow-to / --inset (2026-08-27 신규) ─────────────
+// @AI:INTENT 이 세트는 「사장님이 두 번 확인하지 않게」가 요구사항이었다. 가장 중요한 회귀 가드는
+//   «인자를 안 주면 아무것도 달라지지 않는다»이다 — 기존 썸네일 전부가 여기에 걸려 있다.
+
+test('--tag/--inset 미지정 시 지목 세트를 전혀 주입하지 않는다 (기존 동작 보존)', () => {
+  const { html } = assembleHtml({ ...BASE, layout: 'A' });
+  for (const cls of ['tag-wrap', 'tag-arrow', 'tag-inset-cut', 'tag-inset-circle']) {
+    assert.equal(html.includes(`class="${cls}"`), false, `${cls}가 없어야 한다`);
+  }
+  assert.equal(/Nanum\+Pen\+Script/.test(html), false, '손글씨 웹폰트를 받지 않아야 한다');
+});
+
+test('--tag hand는 손글씨 라벨과 웹폰트 link를 넣는다', () => {
+  const { html } = assembleHtml({ ...BASE, tag: '20년차 매니저' });
+  assert.match(html, /class="tag-hand"/);
+  assert.match(html, /20년차 매니저/);
+  assert.match(html, /Nanum\+Pen\+Script/);
+});
+
+test('--tag-style card는 명함 배지를 쓰고 손글씨 폰트를 받지 않는다', () => {
+  const { html } = assembleHtml({ ...BASE, tag: '20년차 매니저', 'tag-style': 'card' });
+  assert.match(html, /class="tag-card"/);
+  assert.equal(/Nanum\+Pen\+Script/.test(html), false, '명함형은 Noto를 쓰므로 웹폰트가 불필요하다');
+});
+
+test('--arrow-to가 있을 때만 화살표 SVG를 그린다', () => {
+  const without = assembleHtml({ ...BASE, tag: 'x' }).html;
+  assert.equal(without.includes('class="tag-arrow"'), false);
+
+  const withArrow = assembleHtml({ ...BASE, tag: 'x', 'arrow-to': '84,45' }).html;
+  assert.match(withArrow, /class="tag-arrow"/);
+  assert.match(withArrow, /<path d="M [\d.]+ [\d.]+ Q /, '2차 베지어 곡선이어야 한다');
+});
+
+test('화살표 좌표는 캔버스 크기 기준 %다 — 레이아웃 C(1080×1920)에서도 같은 인자가 먹는다', () => {
+  const a = assembleHtml({ ...BASE, layout: 'A', tag: 'x', 'arrow-to': '50,50' }).html;
+  const c = assembleHtml({ ...BASE, layout: 'C', tag: 'x', 'arrow-to': '50,50' }).html;
+  assert.match(a, /viewBox="0 0 1280 720"/);
+  assert.match(c, /viewBox="0 0 1080 1920"/);
+  // C의 끝점은 (540, 960) — 캔버스의 절반
+  assert.match(c, /Q [\d.]+ [\d.]+ 540\.0 960\.0"/);
+});
+
+test('--inset 기본은 누끼(cut)이고 흰 외곽선이 없다 (자연스러운 합성)', () => {
+  const { html } = assembleHtml({ ...BASE, inset: 'https://example.com/cut.png' });
+  assert.match(html, /class="tag-inset-cut"/);
+  assert.equal(/drop-shadow\(3px 0 0 #fff\)/.test(html), false, '기본은 테두리 없음이어야 한다');
+  assert.match(html, /drop-shadow\(0 18px 26px/, '그림자는 항상 있어야 한다');
+});
+
+test('--inset-outline은 4방향 drop-shadow로 스티커 외곽선을 만든다', () => {
+  const { html } = assembleHtml({ ...BASE, inset: 'https://example.com/cut.png', 'inset-outline': '3' });
+  for (const d of ['3px 0 0 #fff', '-3px 0 0 #fff', '0 3px 0 #fff', '0 -3px 0 #fff']) {
+    assert.ok(html.includes(`drop-shadow(${d})`), `${d} 방향이 있어야 한다`);
+  }
+});
+
+test('--inset-shape circle은 원형 액자로 그린다', () => {
+  const { html } = assembleHtml({ ...BASE, inset: 'https://example.com/p.png', 'inset-shape': 'circle', 'inset-size': '210' });
+  assert.match(html, /class="tag-inset-circle"/);
+  assert.match(html, /width:210px;height:210px/);
+});
+
+// @AI:CONSTRAINT 순서 검증은 반드시 `class="..."` 로 찾는다. 클래스 «이름»으로 찾으면
+//   HTML 안에 인라인된 _base.css 의 선택자가 먼저 잡혀서, 마크업이 아니라 CSS 순서를 재게 된다
+//   (2026-08-27: 이 실수로 테스트 하나가 우연히 통과하고 하나가 실패했다).
+test('지목 세트는 .frame 직전에 들어간다 (프레임 선이 항상 맨 위)', () => {
+  const { html } = assembleHtml({ ...BASE, tag: 'x', inset: 'https://example.com/p.png' });
+  const frame = html.indexOf('<div class="frame">');
+  assert.ok(html.indexOf('class="tag-inset-cut"') < frame, '인서트가 frame보다 앞');
+  assert.ok(html.indexOf('class="tag-wrap"') < frame, '라벨이 frame보다 앞');
+});
+
+test('그리는 순서는 화살표 → 인서트 → 라벨이다 (화살촉이 인물 뒤로)', () => {
+  const { html } = assembleHtml({
+    ...BASE, tag: 'x', 'arrow-to': '80,40', inset: 'https://example.com/p.png',
+  });
+  const arrow = html.indexOf('class="tag-arrow"');
+  const inset = html.indexOf('class="tag-inset-cut"');
+  const label = html.indexOf('class="tag-wrap"');
+  assert.ok(arrow > 0 && inset > arrow, '화살표가 인서트보다 앞');
+  assert.ok(label > inset, '라벨이 인서트보다 뒤');
+});
+
+// ── --punch (2026-08-27 신규) ────────────────────────────
+test('--punch 미지정/0이면 배경 보정을 주입하지 않는다 (기존 동작 보존)', () => {
+  assert.equal(/\.bg\{filter:/.test(assembleHtml({ ...BASE }).html), false);
+  assert.equal(/\.bg\{filter:/.test(assembleHtml({ ...BASE, punch: '0' }).html), false);
+});
+
+test('--punch 1은 saturate 1.12 / contrast 1.05를 준다 (실무 확정값)', () => {
+  const { html } = assembleHtml({ ...BASE, punch: '1' });
+  assert.match(html, /\.bg\{filter:saturate\(1\.120\) contrast\(1\.050\)\}/);
+});
+
+// ── 보안: 속성 이스케이프 ────────────────────────────────
+test('--inset-tone에 따옴표가 들어가도 style 속성을 닫지 못한다', () => {
+  const { html } = assembleHtml({
+    ...BASE, inset: 'https://example.com/p.png', 'inset-tone': '" onerror="alert(1)',
+  });
+  assert.equal(html.includes('onerror="alert(1)"'), false, '속성 탈출이 없어야 한다');
+  assert.match(html, /&quot; onerror=&quot;/);
+});
