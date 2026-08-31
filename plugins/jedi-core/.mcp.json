@@ -10,5 +10,9 @@
   "hwp-mcp": {
     "command": "uvx",
     "args": ["--from", "hwp-mcp", "hwp-mcp"]
+  },
+  "playwright": {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@0.0.79"]
   }
 }
