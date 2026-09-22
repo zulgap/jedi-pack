@@ -44,7 +44,10 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
       function fit() {
         var el = document.getElementById('title'); if (!el) return;
         var box = el.parentElement;                 // title-box (width 660)
-        var maxH = 420;                             // 좌측 텍스트 세로 상한 (화면 58%)
+        // @AI:INTENT --title-maxh 로 이 상한을 값으로 바꾼다 (2026-09-05). 미지정 시 아래 기본값 = 종전 동작.
+        //   이 값이 폭을 결정한다 — 낮으면 폰트가 못 커져 짧은 카피가 화면 절반만 채우고, 그러면
+        //   글자가 «얹힌 것»처럼 보인다(발행 썸네일 대조 실측: 88~94% vs 57%).
+        var maxH = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--title-maxh"), 10) || 420;                             // 좌측 텍스트 세로 상한 (화면 58%)
         var size = 92, floor = 44, ceil = 150;
         // @AI:DEPENDS 이 폭 비교는 `.title { white-space: nowrap }` 이 있어야만 성립한다.
         //   줄바꿈이 허용되면 scrollWidth === clientWidth 가 되어 이 항이 항상 false 가 되고,

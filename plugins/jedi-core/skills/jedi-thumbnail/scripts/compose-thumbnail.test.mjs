@@ -6,6 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { assembleHtml } from './compose-thumbnail.mjs';
 
 const BASE = { bg: 'https://example.com/bg.png', title: '가나다라마|**바사아자차**' };
@@ -307,4 +308,168 @@ test('--inset-tone에 따옴표가 들어가도 style 속성을 닫지 못한다
   });
   assert.equal(html.includes('onerror="alert(1)"'), false, '속성 탈출이 없어야 한다');
   assert.match(html, /&quot; onerror=&quot;/);
+});
+
+// ── 색·프레임을 채널이 정한다 (2026-09-05) ────────────────
+// @AI:INTENT 이 절이 지키는 것은 «이 스킬이 채널을 모른다»는 것이다. 종전에는 채널 3벌의 색이
+//   _base.css 의 .acc-yellow/red/pink 로 박혀 있어, 그 셋에 없는 색을 쓰는 채널이 오면
+//   공용 파일에 프리셋을 한 벌 더 넣어야 했다. SKILL.md § 3층 경계는 「강조색 = 채널이 채우는
+//   슬롯」이라 선언해 두었는데 구현만 반대였다 — 선언과 구현이 갈라진 자리를 테스트로 잠근다.
+
+// @AI:DEPENDS _base.css 의 :root 에도 같은 변수명이 «기본값»으로 있다. 그래서 html 전체를 훑으면
+//   주입 여부를 못 가른다 — compose 가 덧붙인 override 블록만 떼어 본다.
+const injected = (html) => (html.match(/<style>:root\{--acc-color:[^}]*\}<\/style>/) || [''])[0];
+
+test('색 인자가 없으면 --acc 프리셋 값이 들어간다 (기존 동작 보존)', () => {
+  const { html } = assembleHtml({ ...BASE, acc: 'red' });
+  assert.match(html, /--acc-color:#ff3b30;--sub-color:#ffe08a;/);
+  assert.equal(/--frame-color/.test(injected(html)), false, '프레임은 미지정 시 주입하지 않는다');
+});
+
+test('--acc 자체가 없으면 노랑이 기본이다', () => {
+  const { html } = assembleHtml({ ...BASE });
+  assert.match(html, /--acc-color:#ffd400;--sub-color:#ffd400;/);
+});
+
+test('--acc-color / --sub-color 가 프리셋을 이긴다', () => {
+  const { html } = assembleHtml({ ...BASE, acc: 'red', 'acc-color': '#f11e8f', 'sub-color': '#00ff00' });
+  assert.match(html, /--acc-color:#f11e8f;--sub-color:#00ff00;/);
+});
+
+test('--frame-* 로 테두리 색·두께·안쪽여백을 정한다 (inset 0 허용)', () => {
+  const { html } = assembleHtml({
+    ...BASE, 'frame-color': '#f11e8f', 'frame-width': '9', 'frame-inset': '0',
+  });
+  assert.match(html, /--frame-color:#f11e8f;/);
+  assert.match(html, /--frame-width:9px;/);
+  assert.match(html, /--frame-inset:0px;/, 'inset 0(가장자리에 붙이기)이 무시되면 안 된다');
+});
+
+test('[보안] 색 인자가 hex 형식이 아니면 무시한다 (CSS 주입 차단)', () => {
+  const { html } = assembleHtml({
+    ...BASE, 'acc-color': 'red}body{display:none', 'frame-color': 'url(javascript:1)',
+  });
+  assert.equal(html.includes('body{display:none'), false);
+  assert.equal(html.includes('javascript:'), false);
+  assert.match(html, /--acc-color:#ffd400;/, '무시하고 기본값으로 떨어져야 한다');
+});
+
+test('[보안] --frame-width 가 정수가 아니면 무시한다', () => {
+  const { html } = assembleHtml({ ...BASE, 'frame-width': '9px;}html{opacity:0' });
+  assert.equal(html.includes('opacity:0'), false);
+  assert.equal(/--frame-width/.test(injected(html)), false);
+});
+
+test('_base.css 는 채널 색을 모른다 — 색 리터럴이 :root 밖에 없다', () => {
+  const css = fs.readFileSync(new URL('../templates/_base.css', import.meta.url), 'utf8');
+  // :root 블록(기본값 선언)을 떼어내고, 나머지 «규칙» 안에 채널이 정할 색이 남아 있는지 본다.
+  // @AI:DEPENDS `.quote.red` 는 제외한다 — 그 빨강은 채널색이 아니라 --quote 의 `!` 접두가 고르는
+  //   «말풍선 강조 표시»이고, 값이 .acc-red 와 우연히 같을 뿐이다. 채널이 말풍선 색을 정해야 할
+  //   일이 생기면 그때 --quote-color 를 따로 열 것 (지금 열면 읽는 곳이 0인 인자가 된다).
+  const withoutRoot = css
+    .replace(/:root\s*\{[\s\S]*?\}/g, '')
+    .replace(/\.quote\.red\s*\{[^}]*\}/g, '');
+  for (const banned of ['#ffd400', '#ff3b30', '#ff2d78', '#ffe08a']) {
+    assert.equal(
+      withoutRoot.includes(banned), false,
+      `${banned} 가 규칙 안에 도로 박혔다 — 채널 색은 --acc-color/--sub-color 로만 준다`
+    );
+  }
+  assert.equal(/\.acc-(yellow|red|pink)\s+\./.test(withoutRoot), false, '채널별 색 클래스를 되살리지 말 것');
+});
+
+// ── 숫자 크기 (2026-09-05) ────────────────────────────────
+// @AI:INTENT 한글 제목 폰트는 숫자 글리프가 한글보다 작다(실측 4종 84~91%). 가장 중요한 숫자가
+//   가장 안 읽히는 자리라, 크기를 값으로 조절한다. 기본 1em = 종전 동작.
+
+test('제목의 숫자를 .num 으로 감싼다', () => {
+  const { html } = assembleHtml({ ...BASE, title: '6주 만에|**4배**가 됐다' });
+  assert.match(html, /<span class="num">6<\/span>주 만에/);
+  assert.match(html, /<em><span class="num">4<\/span>배<\/em>/);
+});
+
+test('소수·쉼표·퍼센트가 한 덩어리로 묶인다 (4.3% 가 세 조각으로 갈라지면 안 된다)', () => {
+  const { html } = assembleHtml({ ...BASE, title: '인용률 4.3%|1,200건' });
+  assert.match(html, /<span class="num">4\.3%<\/span>/);
+  assert.match(html, /<span class="num">1,200<\/span>건/);
+});
+
+test('🔴 줄바꿈 span 의 «2» 를 숫자로 잡지 않는다 (감싸는 순서 가드)', () => {
+  const { html } = assembleHtml({ ...BASE, title: '첫 줄|둘째 줄' });
+  assert.match(html, /<span class="l2">/, 'l2 클래스가 온전해야 한다');
+  assert.equal(html.includes('class="l<span class="num">2'), false, '태그 속성이 깨지면 안 된다');
+});
+
+test('--num-scale 이 CSS 변수로 들어간다', () => {
+  const { html } = assembleHtml({ ...BASE, 'num-scale': '1.15' });
+  assert.match(html, /--num-scale:1\.15em;/);
+});
+
+test('--num-scale 미지정 시 주입하지 않는다 (기본 1em = 기존 동작)', () => {
+  const { html } = assembleHtml({ ...BASE });
+  assert.equal(/--num-scale/.test(injected(html)), false);
+});
+
+test('[보안] --num-scale 은 1.0~1.6 밖이거나 숫자가 아니면 무시한다', () => {
+  for (const bad of ['9', '0.5', '2.0', '1.15;}html{opacity:0', 'abc']) {
+    const { html } = assembleHtml({ ...BASE, 'num-scale': bad });
+    assert.equal(/--num-scale/.test(injected(html)), false, `${bad} 가 통과하면 안 된다`);
+  }
+  assert.equal(assembleHtml({ ...BASE, 'num-scale': '1.15;}html{opacity:0' }).html.includes('opacity:0'), false);
+});
+
+test('_base.css 가 .num 을 --num-scale 로 그린다 (배선 확인)', () => {
+  const css = fs.readFileSync(new URL('../templates/_base.css', import.meta.url), 'utf8');
+  assert.match(css, /\.title \.num\s*\{\s*font-size:\s*var\(--num-scale, 1em\)/);
+});
+
+// ── 배치·그라데이션 (2026-09-05) ──────────────────────────
+// @AI:INTENT 「글자가 얹힌 것처럼 보인다」를 고치는 값들. 발행 썸네일과 픽셀로 대조해 신설했다 —
+//   가로 점유 88~94% ↔ 57% · 아래 여백 5.0% ↔ 9.1% · 줄 간격 2.1% ↔ 4.0%.
+//   기본값은 전부 종전 동작이라 인자를 안 주면 아무것도 안 바뀐다.
+
+test('--line-height / --title-bottom / --title-maxh 가 주입된다', () => {
+  const { html } = assembleHtml({
+    ...BASE, 'line-height': '0.9', 'title-bottom': '26', 'title-maxh': '300',
+  });
+  assert.match(html, /--line-height:0\.9/);
+  assert.match(html, /--title-maxh:300px/);
+  assert.match(html, /\.title-box\{bottom:26px !important\}/);
+});
+
+test('--scrim-h / --scrim-o 가 하단 그라데이션을 바꾼다', () => {
+  const { html } = assembleHtml({ ...BASE, 'scrim-h': '470', 'scrim-o': '0.96' });
+  assert.match(html, /\.scrim-bottom\{height:470px;background:linear-gradient\(0deg,rgba\(0,0,0,0\.96\)/);
+  assert.match(html, /rgba\(0,0,0,0\.47\) 55%/, '중간 지점은 하단 진하기에 비례해야 한다');
+});
+
+test('배치 인자 미지정 시 아무것도 주입하지 않는다 (기존 동작 보존)', () => {
+  const { html } = assembleHtml({ ...BASE });
+  assert.equal(/--line-height:/.test(html.split('</head>')[0].split('<style>:root{--acc-color')[1] || ''), false);
+  assert.equal(/\.title-box\{bottom:/.test(html), false);
+  assert.equal(/\.scrim-bottom\{height:/.test(html), false);
+});
+
+test('[보안] 배치 인자가 범위 밖이거나 숫자가 아니면 무시한다', () => {
+  for (const bad of ['0.5', '2.0', 'abc', '0.9;}html{opacity:0']) {
+    const { html } = assembleHtml({ ...BASE, 'line-height': bad });
+    assert.equal(/--line-height:/.test(injected(html)), false, `line-height ${bad}`);
+    assert.equal(html.includes('opacity:0'), false);
+  }
+});
+
+test('레이아웃 A·B·C 가 --title-maxh 를 읽는다 (배선 확인)', () => {
+  // @AI:DEPENDS 이 상한이 폭을 결정한다 — 못 읽으면 인자를 줘도 글자가 안 커진다.
+  for (const layout of ['A', 'B', 'C']) {
+    const { html } = assembleHtml({ ...BASE, layout });
+    assert.match(html, /getPropertyValue\("--title-maxh"\)/, `${layout}: 상한을 CSS 변수에서 안 읽는다`);
+  }
+});
+
+test('넓적한 폰트 2종(jua·gasoek)이 등록돼 있다', () => {
+  // 한글 제목 폰트가 세로로 서 있으면 짧은 카피가 폭을 못 채워 «얹은 글자»로 보인다.
+  for (const [font, family] of [['jua', "'Jua'"], ['gasoek', "'Gasoek One'"]]) {
+    const { html } = assembleHtml({ ...BASE, font });
+    assert.ok(html.includes(`--font-family:${family}`), `${font} 미등록`);
+  }
 });

@@ -32,8 +32,21 @@
   line-height: var(--line-height, 0.98);
 }
 
-/* 외곽선 두께 = 강도. 기본 6px(한방언니식 강대비). 프리셋이 --stroke 로 덮어씀 */
-:root { --stroke: 6px; --stroke-color: #0a0a0a; }
+/* 외곽선 두께 = 강도. 기본 6px(강대비). 프리셋이 --stroke 로 덮어씀 */
+/* @AI:INTENT 채널이 정하는 값은 전부 여기 변수로만 둔다 — 이 파일은 채널을 몰라야 한다.
+   기본값 = 종전 동작(흰 2px 프레임 · 노랑 강조). compose-thumbnail.mjs 가 :root 로 덮어쓴다.
+   🔴 색 리터럴을 아래 규칙 안에 도로 적지 말 것. 2026-09-05 이전에는 채널 3벌의 색이
+   `.acc-yellow/red/pink` 로 이 파일에 박혀 있어, 그 셋에 없는 색을 쓰는 채널은
+   프리셋을 하나 더 추가해 달라고 이 파일을 고쳐야 했다(SKILL.md § 3층 경계는
+   「강조색 = 채널이 채우는 슬롯」이라 선언해 두었는데 구현만 반대였다). */
+:root {
+  --stroke: 6px; --stroke-color: #0a0a0a;
+  --acc-color: #ffd400;    /* 제목 강조어 */
+  --sub-color: #ffd400;    /* 서브카피(하단 자막) 통째 */
+  --frame-color: #fff;     /* 프레임 테두리 */
+  --frame-width: 2px;
+  --frame-inset: 14px;
+}
 .title {
   -webkit-text-stroke: var(--stroke) var(--stroke-color);
   paint-order: stroke fill;   /* 외곽선이 글자 안 갉아먹게 */
@@ -48,23 +61,25 @@
   text-shadow: 0 4px 14px rgba(0,0,0,.75);
 }
 
-/* ---- 프레임 테두리 (레퍼런스 공통 요소 — A/B/C 전 레이아웃 자동, 별도 인자 없음) ---- */
+/* ---- 프레임 테두리 (A/B/C 전 레이아웃 자동) ----
+   색·두께·안쪽여백은 채널 몫이다. 기본값(흰 2px · inset 14px)은 종전 동작 그대로. */
 .frame {
-  position: absolute; inset: 14px;
-  border: 2px solid #fff;
+  position: absolute; inset: var(--frame-inset);
+  border: var(--frame-width) solid var(--frame-color);
   pointer-events: none;
 }
 
-/* ---- 강조색 팔레트 (실측 채널색 3종) ----
-   .acc = 강조. 줄 전체 또는 핵심 명사에 감싼다. 기본 노랑, 프리셋이 덮어씀 */
+/* ---- 강조 ----
+   .acc = 강조. 줄 전체 또는 핵심 명사에 감싼다. 색은 --acc-color 가 정한다.
+   서브카피는 통째 강조색이 표준(실측: 하단 자막 = 한 줄 전체가 강조색). */
 .title em, .title .acc, .subtitle em, .subtitle .acc { font-style: normal; }
-.acc-yellow .title em, .acc-yellow .title .acc { color: #ffd400; }  /* 한방언니풍 자막 */
-.acc-red    .title em, .acc-red    .title .acc { color: #ff3b30; }  /* 고객사 채널 강조어 */
-.acc-pink   .title em, .acc-pink   .title .acc { color: #ff2d78; }  /* 가연 */
-/* 서브카피는 통째 강조색이 표준(실측: 하단 자막 = 노랑 한 줄) */
-.acc-yellow .subtitle { color: #ffd400; }
-.acc-red    .subtitle { color: #ffe08a; }
-.acc-pink   .subtitle { color: #ffd400; }
+.title em, .title .acc { color: var(--acc-color); }
+.subtitle { color: var(--sub-color); }
+
+/* ---- 숫자 ----
+   한글 제목 폰트는 숫자 글리프가 한글보다 작게 그려진다(실측 4종 전부 84~91%). 그대로 두면
+   가장 중요한 숫자가 가장 안 읽힌다. 기본 1em = 종전 동작, 채널이 --num-scale 로 키운다. */
+.title .num { font-size: var(--num-scale, 1em); }
 
 /* ---- 스크림(대비 확보 그라데이션) — 레이아웃이 위치만 지정 ---- */
 .scrim-bottom { position: absolute; left: 0; right: 0; bottom: 0;

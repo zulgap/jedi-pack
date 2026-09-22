@@ -44,7 +44,10 @@ html, body { width: 1080px; height: 1920px; overflow: hidden; }
       function fit() {
         var el = document.getElementById('title'); if (!el) return;
         var box = el.parentElement;
-        var maxH = 620;                              // 1920의 32% — 상단 1/3 배치라 A(35%)보다 낮게 유지
+        // @AI:INTENT --title-maxh 로 이 상한을 값으로 바꾼다 (2026-09-05). 미지정 시 아래 기본값 = 종전 동작.
+        //   이 값이 폭을 결정한다 — 낮으면 폰트가 못 커져 짧은 카피가 화면 절반만 채우고, 그러면
+        //   글자가 «얹힌 것»처럼 보인다(발행 썸네일 대조 실측: 88~94% vs 57%).
+        var maxH = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--title-maxh"), 10) || 620;                              // 1920의 32% — 상단 1/3 배치라 A(35%)보다 낮게 유지
         var size = 104, floor = 60, ceil = 160;
         function over() { return el.scrollWidth > box.clientWidth || el.scrollHeight > maxH; }
         el.style.fontSize = size + 'px';

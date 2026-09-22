@@ -12,7 +12,7 @@
     "args": ["--from", "hwp-mcp", "hwp-mcp"]
   },
   "playwright": {
-    "command": "npx",
-    "args": ["-y", "@playwright/mcp@0.0.79"]
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.80"]
   }
 }

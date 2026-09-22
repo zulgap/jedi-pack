@@ -1,7 +1,7 @@
 ---
 name: jedi-start
 description: 마스터 허브(노션)를 열어 제품·정본 현황과 "오늘 무엇부터"를 정리하는 작업 시작 진입점. "/jedi-start", "/시작", "시작", "시작하자", "오늘 뭐부터", "이어서 하자", "허브 열어줘" 처럼 작업을 시작할 때, 또는 "전에 뭐 했지", "지난 작업 찾아줘", "예전에 어떻게 했지" 처럼 과거 작업·이력을 찾을 때 사용.
-version: 1.2.0
+version: 1.3.0
 origin: teampack
 tier: shared
 ---
@@ -87,7 +87,10 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" hu
    T=$(date +%Y-%m-%d); Y=$(date -d yesterday +%Y-%m-%d); CUT=$(date -d '3 days ago' +%Y-%m-%d)
    { grep -l '^> *상태: *🔵' *handoff*.md 2>/dev/null; ls ${T}-handoff-*.md ${Y}-handoff-*.md 2>/dev/null; } \
      | grep -v autohandoff | sort -u | while read f; do
-         grep -q '^> *상태: *✅' "$f" && continue
+         # 🔴 머리의 `>` 줄을 «전부» 읽는다 — 다른 사람이 첫 줄 아래에 `> · ✅ 종결` 로 덧붙인 것을
+      #    첫 줄만 보면 놓쳐 끝난 트랙이 후보에 계속 뜬다 (2026-09-08 실측 3건 · jedi-save 와 같은 수리)
+      #    줄 머리가 「상태」급인 것만 끝난 것으로 본다 — 「선행: …(✅ 종결)」 같은 남 이야기 줄은 닫으면 안 된다
+      awk '/^>/{p=1;print;next} p{exit}' "$f" | grep -qE '^> *(·|-|상태:)? *✅ *\**종결' && continue
          grep -q '^> *상태: *🔵' "$f" && m=🔵 || m="⚠️ 표시없음"
          d=$(echo "$f" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
          # 오래된 것은 «접는다» — 빼는 게 아니다(오래됐다고 끝난 게 아니다)
@@ -229,6 +232,18 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" hu
 
    어느 것부터 진행할까요?
    ```
+
+## 내 업무 (누가 나에게 시켰나 · 내가 누구에게 시켰나)
+
+"내 업무 뭐 있어?", "안 끝난 거 뭐 있어?", "나한테 온 거 있어?", "내가 요청한 거 어떻게 됐어?" 처럼
+**본인 일**을 물으면 → **`jedi-work` 스킬을 Skill 도구로 바로 호출한다** (되묻지 말 것).
+
+🔴 **여기서 절차를 다시 적지 않는다.** 도구 인자·상태 해석·출력 형식의 정본은 `jedi-work` 하나다.
+두 곳에 적으면 서버가 바뀔 때 한쪽만 늙는다 — 2026-09-02 서버 변경(팀원 기본이 「내 것만」으로)
+직후 이 자리의 서술이 **하루 만에 틀렸다.** 그래서 정본을 한 곳으로 모았다(2026-09-03 사장님 확정).
+
+- 사장님이 **회사 전체**를 보셔야 하면 그 스킬 안에서 `whose: "all"` 로 넓힌다
+- 일을 **새로 거는 것**(`request_work`)·**닫는 것**(`close_reply_item`)도 그 스킬이 안내한다
 
 ## 과거 회상 (지난 작업 찾기)
 

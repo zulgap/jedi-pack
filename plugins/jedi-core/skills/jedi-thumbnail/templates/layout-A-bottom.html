@@ -53,7 +53,10 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
         //   실측: 한방언니(43만)는 글자가 하단 35~40%, 상단 60%는 이미지가 온전히 보인다.
         //   2026-07-30에 400px(56%)로 잡았다가 "이미지가 하나도 안 보인다" 지적 → 250px(35%)로 정정.
         //   서브카피(제목의 55%)까지 더하면 총 42~45%가 된다.
-        var maxH = 250;
+        // @AI:INTENT --title-maxh 로 이 상한을 값으로 바꾼다 (2026-09-05). 미지정 시 아래 기본값 = 종전 동작.
+        //   이 값이 폭을 결정한다 — 낮으면 폰트가 못 커져 짧은 카피가 화면 절반만 채우고, 그러면
+        //   글자가 «얹힌 것»처럼 보인다(발행 썸네일 대조 실측: 88~94% vs 57%).
+        var maxH = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--title-maxh"), 10) || 250;
         var size = 116, floor = 60, ceil = 210;     // ceil = 짧은 카피가 커질 수 있는 상한
         function over() { return el.scrollWidth > box.clientWidth || el.scrollHeight > maxH; }
         el.style.fontSize = size + 'px';

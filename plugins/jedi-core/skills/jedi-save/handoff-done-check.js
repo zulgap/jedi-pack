@@ -41,8 +41,18 @@ const REPOS = [
 const PR_REPO = 'zulgap/claude-team-pack';
 
 const COND_RE = /^>\s*완료조건:\s*(.+)$/m;
-const OPEN_RE = /^>\s*상태:\s*🔵/m;
+/**
+ * 진행 중 표식 — 🔵 하나가 아니다.
+ *
+ * @AI:CONSTRAINT 🔴 2026-09-14 실측(사장님 PC 판): 🔵 만 보면 **25건이 통째로 안 보인다**
+ *   (🟢 12 · 🟡 4 · 🔴 2 · ⬜ 2 · ⏸ ⬛ 🔀 ⛔ 📋 각 1). 사람이 「부분 종결」·「보류」를 다른 색으로 적기 때문이다.
+ *   실사고: 🟢 로 적힌 트랙이 스캔 밖이라 **이미 고쳐진 일을 「1순위」로 올렸다.**
+ * @AI:INTENT ✅(종결)만 빼고 나머지 색은 전부 본다. 레거시 글자 라벨(`**진행중**`·`IN_PROGRESS` 등)은
+ *   여전히 제외 — 완료조건 규약 이전 문서라 넣으면 노이즈만 는다.
+ */
+const OPEN_RE = /^>\s*상태:\s*(?!✅)[\u{1F300}-\u{1FAFF}\u{2B00}-\u{2BFF}\u{23F0}-\u{23FF}\u{25A0}-\u{27BF}]/mu;
 const DONE_RE = /^>\s*상태:\s*✅/m;
+const MARK_RE = /^>\s*상태:\s*(\S+)/m;
 
 const sh = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', timeout: opts.timeout || 20000, stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
@@ -55,11 +65,56 @@ const sh = (cmd, args, opts = {}) =>
  *   ① 쓰는 사람이 0인 축이 생기고 ② 완료조건 줄은 손으로 쓰는 자유 텍스트라 **임의 명령 실행 통로**가 된다.
  *   `tool:` 이 적혀 있으면 여기서 `unknown_axis` 로 잡혀 「검사 못 함」에 뜬다 — 조용히 통과시키지 않는다.
  */
+
+/**
+ * 「이 조각이 취소선 안인가」를 조각 순서대로 훑는다.
+ *
+ * @AI:INTENT 취소선이 «구분자를 넘어» 걸쳐 있을 수 있다 — 설명을 길게 쓰면
+ *   `~~pr:357,361(정정 · 머지)~~` 가 `·` 로 쪼개져 열림/닫힘이 다른 조각에 떨어진다.
+ * @AI:CONSTRAINT 🔴 이걸 안 보면 **끝난 항목이 「남은 것」으로 보인다** — 오탐 방향이 나쁘다.
+ */
+function scanStruck(cores) {
+  let open = false;
+  return cores.map((core) => {
+    const startsHere = /^~~/.test(core);
+    const closedHere = /^~~[\s\S]*~~/.test(core);
+    const struck = startsHere || open;
+    if (startsHere && !closedHere) open = true;          // 열고 안 닫음 → 뒤 조각도 취소선 안
+    else if (open && /~~\s*$/.test(core)) open = false;  // 꼬리에서 닫힘
+    return struck;
+  });
+}
+
+/**
+ * @AI:CONSTRAINT 🔴 「모름」을 부풀리지 않는다 — 2026-09-14 실측(사장님 PC 판): 진행 중 301건 중
+ *   unknown 51건의 실체가 gh 조회 실패가 아니라 **이 파서의 문법 누락**이었다. 끝난 항목의 취소선 42축 ·
+ *   사람이 적어둔 자유 문장 76축 · 인자 뒤 괄호가 경로를 오염시킨 것이 섞여 있었고, 그 때문에
+ *   「끝났는데 안 끝난 것」이 화면에서 「검사 못 함」으로 보였다. 수리 후 51 → 14.
+ *
+ * 세 갈래로 가른다 — 「이미 끝났다고 사람이 표시한 것(struck)」 · 「기계가 볼 축」 · 「사람이 적어둔 메모(note)」.
+ * note 는 unknown 이 **아니다**(모르는 게 아니라 기계가 볼 것이 아니다). 다만 남아 있으면 ready 로 올리지 않는다.
+ */
 function parseCondition(line) {
-  return line.split(/[·|]/).map((s) => s.trim()).filter(Boolean).map((raw) => {
-    const m = raw.match(/^(pr|commit|file|human):\s*(.+)$/);
-    if (!m) return { kind: 'unknown_axis', raw };
-    return { kind: m[1], arg: m[2].trim(), raw };
+  const cores = line.split(/[·|]/).map((s) => s.trim()).filter(Boolean);
+  const flags = scanStruck(cores);
+  return cores.map((raw, i) => {
+    // ① 취소선 = 사람이 「이 항목은 끝났다」고 그어 둔 것
+    const struck = flags[i];
+    const st = raw.match(/^~~([\s\S]*?)~~/);
+    let core = (struck && st ? st[1] : struck ? raw.replace(/^~~/, '').replace(/~~\s*$/, '') : raw).trim();
+    // ② 백틱·볼드 장식 제거 (`pr:239` / **human:…**)
+    core = core.replace(/^[`*_]+/, '').replace(/[`*_]+$/, '').trim();
+    const m = core.match(/^(pr|commit|file|human):\s*([\s\S]+)$/);
+    if (!m) {
+      // 🔴 접두사가 «있는데» 지원 목록 밖이면 unknown_axis 로 남긴다 — 특히 `tool:`.
+      //   위 @AI:CONSTRAINT 의 계약이다(조용히 통과시키지 않는다). note 로 접으면
+      //   「검사 못 함」에서 사라지고 「사람 답 하나면 닫힘」으로 둔갑한다.
+      if (/^[A-Za-z_][\w-]*:/.test(core)) return { kind: 'unknown_axis', raw, struck };
+      return { kind: 'note', raw, struck };
+    }
+    // ③ 인자 뒤 괄호 주석 절단 — `file:경로 (설명)` 에서 설명이 경로에 붙던 것
+    const arg = m[2].split(/\s+[(（]/)[0].replace(/[`*_]+$/, '').trim();
+    return { kind: m[1], arg, raw, struck };
   });
 }
 
@@ -107,6 +162,9 @@ function checkFile(arg) {
 }
 
 function checkAxis(ax) {
+  // 🔴 취소선은 「사람이 끝났다고 표시한 것」이다 — 다시 검사하지 않는다(그 표시가 곧 사람의 판정).
+  if (ax.struck) return { done_marked: true, why: `끝남 표시: ${(ax.arg || ax.raw).slice(0, 60)}` };
+  if (ax.kind === 'note') return { note: true, why: ax.raw.slice(0, 90) };
   if (ax.kind === 'human') return { human: true, why: ax.arg };
   if (ax.kind === 'unknown_axis') return { unknown: true, why: `모르는 축: ${ax.raw}` };
   try {
@@ -125,20 +183,29 @@ function evaluate(file) {
   const name = path.basename(file);
   const one = ((src.match(/^## 한 줄\s*\n+([\s\S]{0,400}?)(?=\n## |\n$)/m) || [])[1] || '')
     .split('\n').map((s) => s.trim()).filter((s) => s && !/^[>~-]/.test(s))[0] || '';
+  const mark = (src.match(MARK_RE) || [])[1] || '';
   const m = src.match(COND_RE);
-  if (!m) return { file: name, one, state: 'no_condition', axes: [] };
+  if (!m) return { file: name, one, mark, state: 'no_condition', axes: [] };
 
   const axes = parseCondition(m[1]).map((ax) => ({ ...ax, result: checkAxis(ax) }));
-  const machine = axes.filter((a) => a.kind !== 'human' && !a.result.human);
-  const humans = axes.filter((a) => a.result.human);
+  const live = axes.filter((a) => !a.result.done_marked);          // 끝남 표시가 없는 것만 판정 대상
+  const machine = live.filter((a) => !a.result.human && !a.result.note);
+  const humans = live.filter((a) => a.result.human);
+  const notes = live.filter((a) => a.result.note);
   const unknowns = machine.filter((a) => a.result.unknown);
   const unmet = machine.filter((a) => !a.result.unknown && !a.result.ok);
+  const doneMarked = axes.length - live.length;
 
   // 🔴 unknown 이 하나라도 있으면 ready 로 올리지 않는다 — 「모름」은 「충족」이 아니다.
+  // 🔴 note(사람이 적어둔 자유 문장)가 남아 있어도 ready 로 올리지 않는다 — 기계가 못 읽을 뿐
+  //    「남은 것 = 내일 확인」 같은 실제 잔여가 거기 적혀 있다.
   const state = unknowns.length ? 'unknown'
     : unmet.length ? 'in_progress'
-      : humans.length ? 'waiting_human' : 'ready';
-  return { file: name, one, state, axes: axes.map((a) => ({ kind: a.kind, raw: a.raw, ...a.result })) };
+      : (humans.length || notes.length) ? 'waiting_human' : 'ready';
+  return {
+    file: name, one, mark, state, done_marked: doneMarked, notes: notes.length,
+    axes: axes.map((a) => ({ kind: a.kind, raw: a.raw, struck: !!a.struck, ...a.result })),
+  };
 }
 
 function main() {
@@ -173,6 +240,10 @@ function main() {
     in_progress: by('in_progress').length,
     unknown: by('unknown').length,
     no_condition: by('no_condition').length,
+    // 🔑 「사람이 끝났다고 그어 둔 축」과 「기계가 못 읽는 메모」를 «숫자로» 낸다 —
+    //    안 세면 이 둘이 unknown 에 섞여 「모름」을 부풀린다.
+    done_marked_axes: rows.reduce((n, r) => n + (r.done_marked || 0), 0),
+    note_axes: rows.reduce((n, r) => n + (r.notes || 0), 0),
     rows,
   };
   if (asJson) { console.log(JSON.stringify(out, null, 1)); return; }
@@ -188,13 +259,14 @@ function main() {
     }
     if (list.length > 12) console.log(`  … 외 ${list.length - 12}건`);
   };
-  console.log(`[완료조건] 진행 중 ${out.total}건 — 조건 적힌 것 ${out.total - out.no_condition}건`);
+  console.log(`[완료조건] 진행 중 ${out.total}건 — 조건 적힌 것 ${out.total - out.no_condition}건`
+    + ` (끝남 표시 ${out.done_marked_axes}축 · 사람 메모 ${out.note_axes}축)`);
   show('✅ 닫을 수 있는 것', 'ready', null);
-  show('⏳ 사람 답 하나면 닫힘', 'waiting_human', (a) => a.human);
+  show('⏳ 사람 답 하나면 닫힘', 'waiting_human', (a) => a.human || a.note);
   show('🔵 진행 중', 'in_progress', (a) => !a.human && !a.ok && !a.unknown);
   show('⚠️ 검사 못 함 (「미충족」이 아니다)', 'unknown', (a) => a.unknown);
   if (out.no_condition) console.log(`\n📄 완료조건 미표기 ${out.no_condition}건 — /jedi-save 가 다음 회차에 채웁니다`);
 }
 
 if (require.main === module) main();
-module.exports = { parseCondition, checkAxis, evaluate };
+module.exports = { parseCondition, checkAxis, evaluate, scanStruck };

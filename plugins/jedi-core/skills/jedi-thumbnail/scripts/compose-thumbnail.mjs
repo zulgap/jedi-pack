@@ -6,6 +6,9 @@
 //     --title "월 500 노처녀들이|**상향혼**에 빠지는 과정"   (| = 줄바꿈, **강조** = 색)
 //     --subtitle "33세 약사가 5년 만에 다시 상담받은 사연" \
 //     --acc yellow --role 결혼전문가 --channel "<채널명>" \
+//     --acc-color "#f11e8f" --sub-color "#f11e8f"   (강조·서브 색을 직접 지정. --acc 프리셋보다 우선) \
+//     --frame-color "#f11e8f" --frame-width 9 --frame-inset 0   (테두리. 기본 흰 2px·inset 14) \
+//     --num-scale 1.15                (숫자 크기 배수 1.0~1.6. 한글 폰트는 숫자가 작게 그려진다) \
 //     --host "<진행자 얼굴 image_url>"        (레이아웃 A 우측 인물, 선택) \
 //     --sub-size 52 --sub-gap 60             (서브카피 크기·제목과의 간격, px 정수, 선택) \
 //     --quote "제발 저리가!!@22,14" --quote "!여우?@40,10"   (인물 위 말풍선, x,y=%, ! = 빨강)
@@ -33,7 +36,15 @@ const LAYOUTS = {
   B: { file: 'layout-B-split.html',  width: 1280, height: 720 },
   C: { file: 'layout-C-shorts.html', width: 1080, height: 1920 },
 };
-// 채널 강조색 클래스 (실측: 고객사 채널=빨강, 한방언니풍=노랑, 가연=핑크)
+// @AI:INTENT --acc 는 «이름 붙은 팔레트» 3벌이다. 채널 목록이 아니다 —
+//   여기 없는 색을 쓰는 채널은 프리셋을 추가하지 말고 --acc-color 로 직접 준다.
+//   (2026-09-05 이전에는 이 셋이 곧 채널 목록이어서, 넷째 채널이 오면 공용 파일을 고쳐야 했다.)
+const ACC_PRESETS = {
+  yellow: { acc: '#ffd400', sub: '#ffd400' },
+  red:    { acc: '#ff3b30', sub: '#ffe08a' },
+  pink:   { acc: '#ff2d78', sub: '#ffd400' },
+};
+// 클래스는 하위호환용으로만 남긴다 — 템플릿의 {{ACC_CLASS}} 자리를 채우되 색은 위 변수가 정한다.
 const ACC = { yellow: 'acc-yellow', red: 'acc-red', pink: 'acc-pink' };
 
 // @AI:INTENT --font 후보 (전부 Google Fonts 무료). weight가 폰트마다 다른 게 핵심 —
@@ -43,15 +54,29 @@ const FONTS = {
   black:   { css: "'Black Han Sans'", weight: 400, url: 'Black+Han+Sans' },               // 유튜브 썸네일 표준, 굵고 납작
   gothic:  { css: "'Gothic A1'",     weight: 900, url: 'Gothic+A1:wght@700;900' },        // Noto보다 각지고 힘 있음
   dohyeon: { css: "'Do Hyeon'",      weight: 400, url: 'Do+Hyeon' },                      // 둥글고 친근, 멘토 톤
+  // @AI:INTENT 아래 둘은 «가로로 넓적한» 후보다 (2026-09-05 추가). 위 넷은 글자가 세로로 서 있어
+  //   짧은 카피가 폭을 못 채우고, 그래서 «얹은 글자» 처럼 보인다는 지적을 받았다.
+  //   실측 대조: 발행 썸네일은 2줄 카피가 화면 폭의 88~94%를 채우는데 위 넷은 같은 자수에서 57%였다.
+  jua:    { css: "'Jua'",            weight: 400, url: 'Jua' },                            // 둥글넓적, 친근
+  gasoek: { css: "'Gasoek One'",     weight: 400, url: 'Gasoek+One' },                     // 아주 굵고 넓다 — 예능 자막풍
 };
 
 function fail(msg) { console.error(`❌ ${msg}`); process.exit(1); }
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 // --title "1줄|2줄" + **강조** → title_html (윗줄 흰 / 아랫줄 .l2, **x** → <em>x</em>)
+// @AI:INTENT 숫자를 따로 감싼다 — 한글 제목 폰트는 숫자 글리프가 한글에 안 맞춰져 있어서
+//   그대로 쓰면 숫자만 작아 보인다. 2026-09-05 실측(같은 카피를 폰트 4종으로 렌더해 잉크 높이 측정):
+//   Black Han Sans 86.6% · Gothic A1 87.7% · Noto Sans KR 84.0% · Do Hyeon 90.9% — 넷 다
+//   한글보다 작다. 발행된 썸네일에서 잘 읽히는 숫자는 한글의 **96%**였다(다른 폰트를 쓴 것).
+//   폰트를 바꿔서는 못 맞추므로 크기를 값으로 조절한다. 기본 1em = 종전 동작 그대로.
+// @AI:DEPENDS 감싸는 순서가 중요하다 — esc → 숫자 → `**` 순이어야 한다. `**` 를 먼저 풀면
+//   그 뒤에 붙는 `<span class="l2">` 의 «2» 까지 숫자로 잡아 태그가 깨진다.
+const wrapNum = (s) => s.replace(/(\d[\d.,]*%?)/g, '<span class="num">$1</span>');
+
 function buildTitleHtml(raw) {
   const lines = String(raw).split(/\||\\n|\n/).map((s) => s.trim()).filter(Boolean);
-  const mark = (l) => esc(l).replace(/\*\*(.+?)\*\*/g, '<em>$1</em>');
+  const mark = (l) => wrapNum(esc(l)).replace(/\*\*(.+?)\*\*/g, '<em>$1</em>');
   if (!lines.length) return '';
   return mark(lines[0]) + lines.slice(1).map((l) => `<span class="l2">${mark(l)}</span>`).join('');
 }
@@ -206,6 +231,62 @@ export function assembleHtml(opts) {
     ? `<style>:root{${subSize ? `--sub-size:${subSize};` : ''}${subGap ? `--sub-gap:${subGap};` : ''}}</style>`
     : '';
 
+  // @AI:INTENT 채널이 정하는 색·테두리를 값으로 받는다. 미지정 시 --acc 프리셋 → 그것도 없으면 노랑 =
+  //   종전 동작 그대로. 이 인자들이 없던 시절에는 채널 색을 쓰려면 _base.css 에 프리셋을 한 벌
+  //   더 박아야 했고, 그래서 공용 파일이 채널 목록을 알고 있었다(SKILL.md § 3층 경계 위반).
+  // @AI:CONSTRAINT hex/px 형식만 통과시킨다 — 문자열을 그대로 보간하면 `:root{}` 밖으로 빠져나가는
+  //   CSS 주입이 된다(--sub-size 와 같은 방어. 2026-08-20 실사고 참조).
+  const hex = (v) => (typeof v === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : null);
+  const px0 = (v) => (v !== undefined && /^\d+$/.test(String(v)) ? `${+v}px` : null); // 0 허용 (프레임을 가장자리에 붙이는 채널이 있다)
+  const preset = ACC_PRESETS[opts.acc] || ACC_PRESETS.yellow;
+  const accColor = hex(opts['acc-color']) || preset.acc;
+  const subColor = hex(opts['sub-color']) || preset.sub;
+  const frameColor = hex(opts['frame-color']);
+  const frameWidth = px0(opts['frame-width']);
+  const frameInset = px0(opts['frame-inset']);
+  // --num-scale — 숫자 글자 크기 배수(제목 폰트 대비). 위 wrapNum 주석의 실측 참조.
+  // @AI:CONSTRAINT 1.0~1.6 사이 소수만. 그 밖은 무시한다(무한대·CSS 주입 차단).
+  const nsRaw = opts['num-scale'];
+  const numScale = (nsRaw !== undefined && /^\d(\.\d{1,2})?$/.test(String(nsRaw))
+    && +nsRaw >= 1 && +nsRaw <= 1.6) ? String(+nsRaw) : null;
+  // @AI:INTENT 「글자가 얹힌 것처럼 보인다」를 고치는 네 값 (2026-09-05 실측으로 신설).
+  //   발행 썸네일과 우리 렌더를 픽셀로 대조하니 세 축이 어긋나 있었다 —
+  //   가로 점유 88~94% ↔ 57% · 아래 여백 5.0% ↔ 9.1% · 줄 간격 2.1% ↔ 4.0%.
+  //   사람이 만든 것은 «좌우로 꽉 채우고 두 줄을 바짝 붙여 바닥에 앉힌다».
+  //   기본값은 전부 종전 동작이라 인자를 안 주면 아무것도 안 바뀐다.
+  const dec = (v, lo, hi) => (v !== undefined && /^\d(\.\d{1,2})?$/.test(String(v))
+    && +v >= lo && +v <= hi ? String(+v) : null);
+  const lineH = dec(opts['line-height'], 0.7, 1.5);        // 줄 간격 (기본 0.98)
+  const titleBottom = px0(opts['title-bottom']);            // 바닥에서 띄운 높이 (기본 40px)
+  const titleMaxH = px0(opts['title-maxh']);                // 제목 블록 높이 상한 (기본 250px) — 폭이 안 차는 주원인
+  const scrimH = px0(opts['scrim-h']);                      // 하단 그라데이션 높이 (기본 360px)
+  const scrimO = dec(opts['scrim-o'], 0, 1);                // 그 맨 아래 진하기 (기본 0.92)
+  const layoutVars = (lineH || titleBottom || titleMaxH || scrimH || scrimO)
+    ? `<style>`
+      + `${lineH ? `:root{--line-height:${lineH}}` : ''}`
+      + `${titleMaxH ? `:root{--title-maxh:${titleMaxH}}` : ''}`
+      + `${titleBottom ? `.title-box{bottom:${titleBottom} !important}` : ''}`
+      + `${(scrimH || scrimO) ? `.scrim-bottom{${scrimH ? `height:${scrimH};` : ''}`
+        + `background:linear-gradient(0deg,rgba(0,0,0,${scrimO || '.92'}) 0%,`
+        + `rgba(0,0,0,${((+(scrimO || 0.92)) * 0.49).toFixed(2)}) 55%,rgba(0,0,0,0) 100%)}` : ''}`
+      + `</style>`
+    : '';
+  const colorVars = `<style>:root{--acc-color:${accColor};--sub-color:${subColor};`
+    + `${frameColor ? `--frame-color:${frameColor};` : ''}`
+    + `${frameWidth ? `--frame-width:${frameWidth};` : ''}`
+    + `${frameInset ? `--frame-inset:${frameInset};` : ''}`
+    + `${numScale ? `--num-scale:${numScale}em;` : ''}}</style>`;
+
+  // @AI:INTENT --title-w(px) — 제목이 들어갈 «가로 자리»를 값으로 지정한다. 미지정 시 기존 폭 그대로.
+  //   왜 필요한가 (2026-09-05 실사고): 인물 누끼를 우측에 얹는 구성에서 제목 폭이 레이아웃 고정값이라
+  //   ① B(660px)는 화면의 52%만 써서 **글자가 작다**  ② A(left56~right56)는 폭 전체를 채워
+  //   **끝 글자가 인물에 먹힌다**(「…어느 칸에도」의 '도'가 사라졌다). 둘 다 auto-fit이 «인물 자리»를
+  //   모르기 때문이다. 이 인자는 그 자리를 사람이 알려주는 유일한 통로다.
+  //   쓰는 법: 인물 왼쪽 끝 x좌표 − 여백. 예) 1280 캔버스에서 인물이 우측 35%면 --title-w 780
+  // @AI:CONSTRAINT px()로만 파싱한다 — 위 --sub-size와 같은 CSS 주입 방어.
+  const titleW = px(opts['title-w']);
+  const titleVars = titleW ? `<style>.title-box{width:${titleW} !important;right:auto !important}</style>` : '';
+
   // @AI:INTENT --punch — 원본 사진 그대로면 피드에서 밋밋하다. 채도·대비만 살짝 올린다.
   // @AI:CONSTRAINT 기본은 0(끔)이다. 켜는 것을 기본값으로 하면 기존 썸네일이 전부 달라진다.
   //   1.0 을 넘기면 피부가 붉게 뜨므로 실무 권장 상한은 1.
@@ -232,10 +313,10 @@ export function assembleHtml(opts) {
     .replace(/\{\{role\}\}/g, esc(opts.role || ''))
     .replace(/\{\{channel\}\}/g, esc(opts.channel || ''));
 
-  // 외곽선 두께 + 폰트 + 서브카피 override 주입 (head 끝 — 기존 <link>/base CSS보다 뒤라 이게 이긴다)
-  if (strokeVars || fontVars || subVars || punchVars || tagSet.head) {
-    html = html.replace('</head>', `${tagSet.head}\n${fontVars}\n${strokeVars}\n${subVars}\n${punchVars}\n</head>`);
-  }
+  // 색 + 외곽선 두께 + 폰트 + 서브카피 override 주입 (head 끝 — 기존 <link>/base CSS보다 뒤라 이게 이긴다)
+  // @AI:DEPENDS colorVars 는 «항상» 주입된다(프리셋 기본값이라도). base CSS 의 :root 기본값과 같은 값이
+  //   들어가므로 렌더 결과는 종전과 동일하지만, HTML 문자열을 그대로 비교하는 검사는 이 줄을 본다.
+  html = html.replace('</head>', `${tagSet.head}\n${colorVars}\n${layoutVars}\n${fontVars}\n${strokeVars}\n${subVars}\n${titleVars}\n${punchVars}\n</head>`);
 
   // @AI:DEPENDS .frame(흰 테두리)은 A/B/C 세 템플릿에 모두 있고 항상 맨 위에 그려진다.
   //   지목 세트를 그 **직전**에 넣어야 프레임 선 아래로 들어간다.
