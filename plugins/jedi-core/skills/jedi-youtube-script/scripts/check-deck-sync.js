@@ -21,8 +21,9 @@
 const fs = require('fs');
 
 const argv = process.argv.slice(2);
-const files = argv.filter((a) => !a.startsWith('--') && !isVal(a));
+// @AI:FRAGILE VAL_OPTS 는 files 보다 «먼저» 선언돼야 한다 — isVal 이 filter 안에서 동기 호출되므로 아래 두면 TDZ 로 즉사한다 (2026-09-23 실측)
 const VAL_OPTS = new Set(['min-shots', 'max-textonly', 'head']);
+const files = argv.filter((a) => !a.startsWith('--') && !isVal(a));
 function isVal(a) {
   const i = argv.indexOf(a);
   return i > 0 && argv[i - 1].startsWith('--') && VAL_OPTS.has(argv[i - 1].slice(2));

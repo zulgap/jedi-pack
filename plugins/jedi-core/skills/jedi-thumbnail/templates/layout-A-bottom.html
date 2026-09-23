@@ -21,7 +21,7 @@ html, body { width: 1280px; height: 720px; overflow: hidden; }
 
 /* 제목: 하단 2줄. 실측 = 프레임 높이 16~18% ≈ 116px */
 .title-box { position: absolute; left: 56px; right: 56px; bottom: 40px; }
-.title { font-size: 116px; }
+.title { font-size: 116px; white-space: nowrap; }   /* @AI:DEPENDS 줄바꿈되면 scrollWidth 로 폭 넘침을 못 잰다 — B 와 같은 수정(2026-09-22 실측: 첫 줄 17자가 3줄로 갈라짐) */
 .title .l2 { display: block; }   /* 2줄 강제 분리 (윗줄 흰 / 아랫줄 강조) */
 
 /* 서브카피(선택): 제목 위 작은 맥락 자막 */
