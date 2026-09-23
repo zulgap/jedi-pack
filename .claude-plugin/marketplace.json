@@ -24,6 +24,11 @@
       "source": "./plugins/dev-pack"
     },
     {
+      "name": "hwan-pack",
+      "description": "추억환전소 전용 팩 — VHS 자동 녹화 + mp4 변환 (카드 packs 에 hwan 이 있는 회사만 켜짐)",
+      "source": "./plugins/hwan-pack"
+    },
+    {
       "name": "zulgap",
       "description": "[전환기 병존 — 다음 릴리스에서 제거] 구 단일 플러그인. hook-doctor v2가 신 3플러그인으로 전환",
       "source": {
