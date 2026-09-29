@@ -13,6 +13,6 @@
   },
   "playwright": {
     "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.80"]
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.83"]
   }
 }

@@ -84,7 +84,8 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" hu
    export LC_ALL=C   # 🔴 빼지 말 것 — 없으면 아래 1순위 필터가 통째로 꺼진다 (§ 함정 참조)
    # 1순위: 「진행」 표시된 것. 2순위: 상태 줄이 없는 옛 파일 중 최근 2일치
    #   · ✅ 종결은 무조건 뺀다 · 날짜는 파일명으로 자른다(파일 시각은 내려받기로 바뀐다)
-   T=$(date +%Y-%m-%d); Y=$(date -d yesterday +%Y-%m-%d); CUT=$(date -d '3 days ago' +%Y-%m-%d)
+   # 🔴 맥(BSD date)은 -d 를 모른다 — -v 로 한 번 더 묻는다(윈도우 Git Bash·리눅스는 앞의 것이 된다)
+   T=$(date +%Y-%m-%d); Y=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d); CUT=$(date -d '3 days ago' +%Y-%m-%d 2>/dev/null || date -v-3d +%Y-%m-%d)
    { grep -l '^> *상태: *🔵' *handoff*.md 2>/dev/null; ls ${T}-handoff-*.md ${Y}-handoff-*.md 2>/dev/null; } \
      | grep -v autohandoff | sort -u | while read f; do
          # 🔴 머리의 `>` 줄을 «전부» 읽는다 — 다른 사람이 첫 줄 아래에 `> · ✅ 종결` 로 덧붙인 것을

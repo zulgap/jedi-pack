@@ -244,7 +244,8 @@ node plugins/jedi-core/skills/jedi-save/handoff-done-check.js --json   # /jedi-s
 ```bash
 cd ~/.claude/specs
 export LC_ALL=C
-CUT=$(date -d '3 days ago' +%Y-%m-%d)
+# 🔴 맥(BSD date)은 -d 를 모른다 — -v 로 한 번 더 묻는다(윈도우 Git Bash·리눅스는 앞의 것이 된다)
+CUT=$(date -d '3 days ago' +%Y-%m-%d 2>/dev/null || date -v-3d +%Y-%m-%d)
 grep -l '^> *상태: *🔵' *handoff*.md 2>/dev/null | grep -v autohandoff | while read f; do
   d=$(echo "$f" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}')
   [ -n "$d" ] || continue    # 🔴 날짜를 못 읽으면 묻지 않는다(빈 값은 어떤 날짜보다 작아 전부 걸린다)
