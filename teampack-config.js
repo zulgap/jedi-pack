@@ -9,9 +9,16 @@
 //   node teampack-config.js hub           -> 허브 페이지 ID (staff_hub_id || master_hub_id)
 //   node teampack-config.js notion.<key>  -> 노션 ID 임의 키 (team_journal_ds 등)
 //   node teampack-config.js company       -> 회사명
+//   node teampack-config.js has:<key>     -> yes / no / unknown  (예: has:notion.team_journal_ds · has:hub)
 //
 // 출력 규약: 해당 값만 stdout(모르면 빈 문자열). 경고·진단은 stderr → 파이프 오염 0.
 //   종료코드는 항상 0 — 이 스크립트 실패가 스킬 진행을 막지 않는다(신원은 부수 정보).
+//
+// @AI:INTENT `has:` = 「못 읽었다」와 「비어 있다」를 가르는 유일한 통로 (2026-09-30 · 노션 없는 회사).
+//   값 조회(`notion.x`)는 둘 다 빈 문자열이라, 그걸로 「노션 없는 회사」를 판정하면 **네트워크가 잠깐
+//   끊긴 노션 회사가 노션을 건너뛰는 길로 빠진다.** 그래서 판정은 반드시 `has:` 로 한다.
+//   yes/no 는 «카드를 실제로 읽었을 때만»(서버 200 또는 7일 이내 캐시) — 그 외(토큰 없음·404·
+//   타임아웃·낡은 캐시·예외)는 전부 unknown. 🔴 unknown 을 no 로 뭉개지 말 것.
 //
 // @AI:CONSTRAINT 🔴 파일 폴백(staff-map.json)을 두지 않는다.
 //   백엔드가 평소 답해버리면 파일이 썩은 사실 자체가 은폐되고, 두 소스 불일치를 감지할 게이트가 0개다.
@@ -103,22 +110,32 @@ function pick(data, key) {
   return '';
 }
 
+const rawKey = (process.argv[2] || 'name').trim();
+const isHas = rawKey.startsWith('has:');
+const key = isHas ? rawKey.slice(4) : rawKey;
+// 못 읽었을 때: 값 조회는 종전대로 '' · has: 는 'unknown'
+const NONE = isHas ? 'unknown' : '';
+// 읽었을 때: 값 조회는 값 그대로 · has: 는 yes/no
+//   🔴 카드 계약(`notion` 객체)이 없는 200 응답은 «읽었다»로 치지 않는다 — 에러 본문이 200 으로 와도
+//   no 로 떨어지지 않게(서버 계약: unified-agent/shared/teampack-config.js 는 notion 을 항상 객체로 준다).
+const isCard = (d) => !!(d && d.notion && typeof d.notion === 'object' && !Array.isArray(d.notion));
+const answer = (data) => (isHas ? (isCard(data) ? (pick(data, key) ? 'yes' : 'no') : 'unknown') : pick(data, key));
+
 (async () => {
-  const key = (process.argv[2] || 'name').trim();
   const creds = readCreds();
-  if (!creds) { warn('제디 토큰 없음 — 사장님께 발급 요청'); out(''); }
+  if (!creds) { warn('제디 토큰 없음 — 사장님께 발급 요청'); out(NONE); }
 
   const fresh = await fetchConfig(creds);
-  if (fresh) { writeCache(fresh); out(pick(fresh, key)); }
+  if (fresh) { writeCache(fresh); out(answer(fresh)); }
 
   // 서버 실패 → 직전 응답 캐시로 폴백 (다른 장부가 아니라 같은 소스의 사본)
   const cached = readCache();
-  if (!cached) { warn('캐시도 없음 — 값 없이 진행'); out(''); }
+  if (!cached) { warn('캐시도 없음 — 값 없이 진행'); out(NONE); }
   if (cached.ageDays > STALE_DAYS) {
     // @AI:FRAGILE fail-loud — 조용히 옛 값을 쓰면 개명·퇴사가 반영 안 된 채 기록이 쌓인다
     warn(`🔴 캐시가 ${Math.floor(cached.ageDays)}일 지났습니다(허용 ${STALE_DAYS}일). 값을 쓰지 않습니다 — 네트워크/토큰을 확인하세요.`);
-    out('');
+    out(NONE);
   }
   warn(`캐시 사용(${Math.floor(cached.ageDays)}일 전 응답)`);
-  out(pick(cached.data, key));
-})().catch(() => out(''));
+  out(answer(cached.data));
+})().catch(() => out(NONE));
