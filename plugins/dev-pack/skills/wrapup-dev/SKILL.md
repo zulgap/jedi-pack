@@ -21,7 +21,7 @@ The Claude account is shared, so authorship comes from the developer's personal 
 **The name comes from the server** (since 2026-07-29 — backend `actor.name`, not a file list):
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" name
+f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" name
 ```
 - If that path does not exist, find `teampack-config.js` under `~/.claude/plugins` and run it (cache paths vary).
   (Backward compatible: `resolve-staff.js` returns the same value — it delegates to the script above.)
@@ -35,7 +35,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" na
 Call `notion-create-pages`:
 - **parent**: `{"type":"data_source_id","data_source_id":"<output of the command below>"}` (team session journal DB)
   ```
-  node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" notion.team_journal_ds
+  f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" notion.team_journal_ds
   ```
   (never hardcode — the DB differs per company. If empty, ask the boss for onboarding)
 - **properties**:
@@ -65,7 +65,7 @@ Call `notion-create-pages`:
 🔴 **A Notion row alone is not searchable.** Using the **page id** from the create response:
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js" "<page_id>" "<title>" "<one-line summary>"
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>"
 ```
 - This is what makes the entry findable later (recall / context loaders).
 - **Authorship is resolved server-side from your token** — do not send a name.

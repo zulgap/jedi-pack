@@ -19,7 +19,7 @@ Load the developer's assigned tasks from the **Notion Dev Task Board** and prese
 
 - Data source ID (for queries) — **never hardcode**, get it from the server:
   ```
-  node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" notion.dev_task_board_ds
+  f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" notion.dev_task_board_ds
   ```
   Then query `collection://<that id>`. If empty, ask the boss for onboarding.
 - Columns: `Task` (title) / `Status` (Backlog·Todo·In Progress·In Review·Done) / `Priority` (P1·P2·P3) / `Service` / `Assignee` / `PR Link` / `Due`

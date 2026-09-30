@@ -71,7 +71,7 @@ node "<이 스킬 디렉토리>/collect-prompts.js" --why-pick '[{"n":12,"reason
 공유 계정이라 "누가 했는지"는 개인 제디 토큰의 actor로 식별한다. **이름은 서버가 알려준다**(2026-07-29~ — 파일 명단이 아니라 백엔드 `actor.name`). 적재 직전 **딱 1회** Bash로 실행:
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" name
+f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" name
 ```
 - 위 경로가 없으면 `~/.claude/plugins` 아래에서 `teampack-config.js`를 찾아 실행한다(캐시 경로 환경차).
   (구버전 호환: `resolve-staff.js`도 같은 값을 준다 — 내부에서 위 스크립트로 위임)
@@ -85,7 +85,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" na
 노션을 쓰지 않는 회사도 있다. 그 회사는 저널을 **서버에 바로** 저장하고 미니앱에서 본다. 판정은 아래 한 줄로만 한다:
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" has:notion.team_journal_ds
+f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" has:notion.team_journal_ds
 ```
 
 | 출력 | 뜻 | 할 일 |
@@ -105,7 +105,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" ha
 
 ② **서버에 저장** (Bash, 딱 1회):
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js" new "<세션 제목>" "<한줄 요약>" --body-file "<①의 파일>" --no-notion [--whys-file "<「왜」 파일>"]
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" new "<세션 제목>" "<한줄 요약>" --body-file "<①의 파일>" --no-notion [--whys-file "<「왜」 파일>"]
 ```
 - `--whys-file` 은 § 「왜」 고르기에서 1개 이상 골랐을 때만 붙인다. 파일이 깨져도 저널은 그대로 저장된다.
 - 위 경로가 없으면 `~/.claude/plugins` 아래에서 `journal-ingest.js` 를 찾아 실행한다.
@@ -131,7 +131,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js" new
 `notion-create-pages` 호출:
 - **parent**: `{"type":"data_source_id","data_source_id":"<아래 명령의 출력>"}`
   ```
-  node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" notion.team_journal_ds
+  f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" notion.team_journal_ds
   ```
   (하드코딩 금지 — 회사마다 DB가 다르다. 출력이 비면 관리자에게 온보딩 요청)
   - (회사 "팀 세션 저널" DB — 마스터 허브 하위. 직원이 이 DB에 노션 권한이 있어야 적재됨)
@@ -191,7 +191,7 @@ diff -u sent.md got.md          # 다르면 그 줄이 통째로 나온다. 오�
 🔴 **노션에만 쌓으면 나중에 검색이 안 된다.** 적재 응답의 **page id**로 아래를 실행:
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js" "<page_id>" "<세션 제목>" "<한줄 요약>" [--whys-file "<「왜」 파일>"]
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<세션 제목>" "<한줄 요약>" [--whys-file "<「왜」 파일>"]
 ```
 - `--whys-file` 은 § 「왜」 고르기에서 1개 이상 골랐을 때만 붙인다.
 - 이걸 해야 나중에 `/시작`의 과거 회상이나 제디가 이 기록을 **찾을 수 있다**.

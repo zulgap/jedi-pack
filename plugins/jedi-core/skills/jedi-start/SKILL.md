@@ -21,7 +21,7 @@ tier: shared
 🔀 **먼저 노션을 쓰는 회사인지 본다 (2026-09-30)** — 노션을 쓰지 않고 우리 서버·미니앱으로 보는 회사가 있다:
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" has:hub
+f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" has:hub
 ```
 
 | 출력 | 할 일 |
@@ -35,7 +35,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" ha
 🔴 **페이지 ID를 하드코딩하지 않는다.** 아래 명령으로 얻는다 (회사마다 다르고, 팀원용/관리자용이 갈린다):
 
 ```
-node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" hub
+f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" hub
 ```
 - 위 경로가 없으면 `~/.claude/plugins` 아래에서 `teampack-config.js`를 찾아 실행한다(캐시 경로 환경차).
 - 출력이 **비어 있으면** 허브를 열 수 없다 → 관리자에게 토큰/온보딩 요청 후 §과거 회상만 진행.
@@ -177,7 +177,7 @@ node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" hu
    팀 저널에서 오늘 적재된 것을 본다. ID는 하드코딩하지 말고 얻는다:
 
    ```bash
-   node "$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js" notion.team_journal_ds
+   f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" notion.team_journal_ds
    ```
 
    얻은 ID로 오늘 행의 **`작성자`·`세션`** 을 조회해, 후보와 겹치는 것이 있으면 **1순위에서 내리고 경고를 붙인다**.
