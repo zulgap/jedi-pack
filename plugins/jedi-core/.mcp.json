@@ -5,11 +5,11 @@
   },
   "pptx": {
     "command": "uvx",
-    "args": ["--from", "office-powerpoint-mcp-server", "ppt_mcp_server"]
+    "args": ["--with", "mcp<2", "--from", "office-powerpoint-mcp-server", "ppt_mcp_server"]
   },
   "hwp-mcp": {
     "command": "uvx",
-    "args": ["--from", "hwp-mcp", "hwp-mcp"]
+    "args": ["--with", "mcp<2", "--from", "hwp-mcp", "hwp-mcp"]
   },
   "playwright": {
     "command": "node",

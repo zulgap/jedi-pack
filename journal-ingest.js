@@ -8,6 +8,7 @@
 //   node journal-ingest.js "<notion_page_id 대시 UUID>" "<세션 제목>" "<한줄 요약>"          ← 노션 회사 (종전 그대로)
 //   node journal-ingest.js "<page_id>" "<제목>" "<한줄 요약>" --body-file <5섹션 본문.md>      ← 본문까지
 //   node journal-ingest.js new "<제목>" "<한줄 요약>" --body-file <본문.md> --no-notion          ← 노션 없는 회사
+//   … --whys-file <why.json>  「왜」 번호+구절(collect-prompts.js --why-pick 이 만든 파일 · 선택)
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
 //
 // ── 노션 없는 회사 (2026-09-30 · spec 2026-09-30-journal-server-save-why.md S2·S3) ──
@@ -42,9 +43,9 @@ const CONTENT_CAP = 8000;
 // 「어디서 이어받나」를 담는 섹션. 5섹션의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FLAGS_WITH_VALUE = new Set(['--body-file']);
+const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file']);
 
 /**
  * 5섹션 본문을 «미해결·다음 먼저» 순서로 재배열한다. 결정론 — LLM 0.
@@ -117,13 +118,33 @@ function buildRequest(argv, deps = {}) {
     text = summary || ''; // 🔴 옛 3인자 — 바이트 동일(위 @AI:CONSTRAINT)
   }
 
+  // ── 「왜」 (2026-09-30 · 저널 「왜」 v3.1) — collect-prompts.js --why-pick 이 만든 파일 ──
+  // @AI:INTENT 사람이 이유를 댄 말의 «번호 + 구절»만 보낸다. 원문은 서버가 자기 사본(대화 원장)에서 꺼내 대조한다.
+  // @AI:CONSTRAINT 🔴 파일이 없거나 깨졌으면 「왜」만 빼고 저널은 그대로 보낸다 — 「왜」 하나 때문에 저널 저장을 막지 않는다.
+  //   파일이 없으면 payload 에 whys 키 자체를 안 넣는다(옛 호출 바이트 동일 · 위 @AI:CONSTRAINT).
+  let whys = null;
+  let whysWarning = '';
+  if (flags['--whys-file']) {
+    try {
+      const arr = JSON.parse(readFile(flags['--whys-file']));
+      const clean = (Array.isArray(arr) ? arr : [])
+        .filter((w) => w && UUID_RE.test(String(w.turn_uuid || '')) && typeof w.reason_quote === 'string' && w.reason_quote.trim())
+        .slice(0, 3)
+        .map((w) => ({ turn_uuid: String(w.turn_uuid).toLowerCase(), reason_quote: w.reason_quote.trim() }));
+      if (clean.length) whys = clean;
+    } catch (e) {
+      whysWarning = `--whys-file 읽기 실패 — 「왜」 없이 저널만 보냅니다 (${e.message})`;
+    }
+  }
+
   const projected = `${title}\n${text}`.trim();
-  const payload = JSON.stringify({ source_id: sourceId, title, text });
+  const payload = JSON.stringify(whys ? { source_id: sourceId, title, text, whys } : { source_id: sourceId, title, text });
   return {
     ok: true, sourceId, title, summary: summary || '', text, body, noNotion, dryRun, generated,
     projectedLength: projected.length,
     willTruncate: projected.length > CONTENT_CAP,
     hoistedLength,
+    whys, whysWarning,
     payload,
   };
 }
@@ -150,7 +171,7 @@ function main() {
   const noNotionArg = process.argv.includes('--no-notion');
   if (!r.ok) {
     if (r.usage) {
-      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--no-notion] [--dry-run]');
+      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] [--no-notion] [--dry-run]');
     } else {
       console.error(`journal-ingest: ${r.error}`);
     }
@@ -158,6 +179,8 @@ function main() {
     process.exit(noNotionArg ? 1 : 0);
   }
 
+  if (r.whysWarning) console.log(`journal-ingest: ⚠️ ${r.whysWarning}`);
+  if (r.whys) console.log(`journal-ingest: 「왜」 ${r.whys.length}건 함께 보냄 — 서버가 대화 원장과 대조해 확인된 것만 판단 기록으로 남깁니다`);
   if (r.generated) console.log(`journal-ingest: source_id=${r.sourceId}  (다시 보낼 때는 new 대신 이 번호로)`);
   if (r.body) {
     console.log(
