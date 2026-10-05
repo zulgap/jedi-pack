@@ -9,7 +9,15 @@
 //   node journal-ingest.js "<page_id>" "<제목>" "<한줄 요약>" --body-file <5섹션 본문.md>      ← 본문까지
 //   node journal-ingest.js new "<제목>" "<한줄 요약>" --body-file <본문.md> --no-notion          ← 노션 없는 회사
 //   … --whys-file <why.json>  「왜」 번호+구절(collect-prompts.js --why-pick 이 만든 파일 · 선택)
+//   … --object <객체 uuid> [--object-alias "<본문 속 이름>"]  이 저널의 대상 객체(선택 · 2026-10-06)
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
+//
+// ── 맥락 계층 (2026-10-06 · 판단OS #4331 · #4335 의 팀팩 쪽) ──
+// @AI:INTENT session_uuid — Claude Code 가 주는 CLAUDE_CODE_SESSION_ID 를 함께 보낸다. 서버가 이 세션의 사람 발화와
+//   «핵심 결정» 줄의 인용을 글자 대조해, 원문 인용이 없는 줄에 [AI 제안] · 맞지 않는 인용에 [원문 미확인] 꼬리표를 붙인다.
+//   AI 의견이 «확정»으로 적혀 다음 세션이 그대로 따르는 길을 끊는다. 없으면 서버는 표식 없이 종전 그대로.
+// @AI:INTENT --object — 판단이 맞는 대상(고객사·상품)에 묶여야 «같은 대상 안의 최신순»이 돈다. 서버가 같은 회사 칸
+//   객체인지 확인하고 묶는다(아니면 무시). 별칭은 본문에 낱말로 나온 이름만 그 객체에 쌓인다.
 //
 // ── 노션 없는 회사 (2026-09-30 · spec 2026-09-30-journal-server-save-why.md S2·S3) ──
 // 노션을 안 쓰는 회사는 이 호출이 **저널 저장 그 자체**다(서버 → 미니앱에서 본다).
@@ -25,9 +33,11 @@
 //
 // @AI:CONSTRAINT 노션 회사 경로(--no-notion 없음)는 실패해도 종료코드 0 — 저널은 이미 노션에 있고,
 //   인덱싱 실패가 스킬 진행을 막아선 안 된다. 다만 **조용히 넘기지 않고** stdout 에 남긴다.
-// @AI:CONSTRAINT 🔴 3인자 호출(본문 없음)의 전송 문자열은 옛 판과 **바이트 동일**해야 한다 —
+// @AI:CONSTRAINT 🔴 3인자 호출(본문 없음)의 source_id·title·text 는 옛 판과 **바이트 동일**해야 한다 —
 //   서버의 「content 같으면 재임베딩 skip」 멱등이 이것에 기대고, 이미 적재된 저널이 재임베딩되지 않는다.
 //   그래서 본문 조립은 --body-file 이 있을 때만 한다(검사: scripts/_test-journal-ingest.js).
+//   session_uuid 는 그 뒤에 «키만» 붙는다 — 서버 멱등 키(content_text = 제목+text)에 들어가지 않는다.
+//   세션 번호가 없으면(옛 Claude Code·검사) 전송 문자열 전체가 옛 판과 바이트 동일.
 
 'use strict';
 const fs = require('fs');
@@ -43,9 +53,11 @@ const CONTENT_CAP = 8000;
 // 「어디서 이어받나」를 담는 섹션. 5섹션의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file']);
+const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias']);
+// @AI:DEPENDS 서버 server.js /mcp/ext/journal-ingest object_alias .slice(0, 40) — 넘으면 서버가 잘라 «본문에 없는 이름»이 된다
+const MAX_OBJECT_ALIAS = 40;
 
 /**
  * 5섹션 본문을 «미해결·다음 먼저» 순서로 재배열한다. 결정론 — LLM 0.
@@ -73,6 +85,7 @@ function hoistPrioritySection(body) {
 function buildRequest(argv, deps = {}) {
   const readFile = deps.readFile || ((p) => fs.readFileSync(p, 'utf8'));
   const newId = deps.newId || (() => crypto.randomUUID());
+  const sessionId = deps.sessionId !== undefined ? deps.sessionId : (process.env.CLAUDE_CODE_SESSION_ID || '');
 
   const positional = [];
   const flags = {};
@@ -81,7 +94,8 @@ function buildRequest(argv, deps = {}) {
     if (KNOWN_FLAGS.has(a)) {
       if (FLAGS_WITH_VALUE.has(a)) {
         const v = argv[i + 1];
-        if (!v || v.startsWith('--')) return { ok: false, error: `${a} 뒤에 경로가 없습니다` };
+        // 🔴 값 없이 플래그만 오면 멈춘다 — 조용히 무시하면 「묶였다」고 믿는다
+        if (!v || v.startsWith('--')) return { ok: false, error: `${a} 뒤에 ${a.startsWith('--object') ? '값' : '경로'}이 없습니다` };
         flags[a] = v; i++;
       } else {
         flags[a] = true;
@@ -137,14 +151,35 @@ function buildRequest(argv, deps = {}) {
     }
   }
 
+  // ── 대상 객체 (선택) — 서버가 같은 회사 칸 객체인지 확인한다. 여기서는 모양만 본다(fail-closed)
+  let objectId = null;
+  let objectAlias = null;
+  if (flags['--object']) {
+    if (!UUID_RE.test(flags['--object'])) return { ok: false, error: `--object 값이 객체 번호(uuid) 형식이 아닙니다: ${flags['--object']}` };
+    objectId = flags['--object'].toLowerCase();
+  }
+  if (flags['--object-alias']) {
+    if (!objectId) return { ok: false, error: '--object-alias 는 --object 와 함께만 씁니다' };
+    objectAlias = flags['--object-alias'].trim();
+    if (objectAlias.length > MAX_OBJECT_ALIAS) return { ok: false, error: `--object-alias 가 ${MAX_OBJECT_ALIAS}자를 넘습니다` };
+  }
+  const sessionUuid = UUID_RE.test(String(sessionId || '')) ? String(sessionId).toLowerCase() : null;
+
   const projected = `${title}\n${text}`.trim();
-  const payload = JSON.stringify(whys ? { source_id: sourceId, title, text, whys } : { source_id: sourceId, title, text });
+  // 키 순서 = 옛 판 3키 → whys → 새 키. 새 값이 없으면 키 자체를 안 넣는다(옛 전송 문자열 바이트 동일).
+  const obj = { source_id: sourceId, title, text };
+  if (whys) obj.whys = whys;
+  if (objectId) obj.object_id = objectId;
+  if (objectAlias) obj.object_alias = objectAlias;
+  if (sessionUuid) obj.session_uuid = sessionUuid;
+  const payload = JSON.stringify(obj);
   return {
     ok: true, sourceId, title, summary: summary || '', text, body, noNotion, dryRun, generated,
     projectedLength: projected.length,
     willTruncate: projected.length > CONTENT_CAP,
     hoistedLength,
     whys, whysWarning,
+    objectId, objectAlias, sessionUuid,
     payload,
   };
 }
@@ -171,7 +206,7 @@ function main() {
   const noNotionArg = process.argv.includes('--no-notion');
   if (!r.ok) {
     if (r.usage) {
-      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] [--no-notion] [--dry-run]');
+      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] [--object <uuid> [--object-alias <name>]] [--no-notion] [--dry-run]');
     } else {
       console.error(`journal-ingest: ${r.error}`);
     }
@@ -207,7 +242,7 @@ function main() {
     failed = true;
     if (r.noNotion) {
       console.log(`journal-ingest: ❌ 저장되지 않았습니다 — ${msg}`);
-      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion`);
+      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}`);
       process.exitCode = 1;
     } else {
       console.log(`journal-ingest: ⚠️ ${msg}${tail}`);
@@ -243,7 +278,8 @@ function main() {
     res.on('end', () => {
       if (res.statusCode === 200) {
         let deduped = false;
-        try { deduped = !!JSON.parse(s).deduped; } catch (_) {}
+        let ai = null;
+        try { const j = JSON.parse(s); deduped = !!j.deduped; ai = j.ai_proposal || null; } catch (_) {}
         if (r.noNotion) {
           console.log(deduped
             ? 'journal-ingest: ✅ 이미 같은 내용으로 저장돼 있습니다'
@@ -252,6 +288,10 @@ function main() {
           console.log(deduped
             ? 'journal-ingest: ✅ 이미 동일 내용 (재임베딩 skip)'
             : 'journal-ingest: ✅ 인덱싱 완료 — 이제 검색·회상에서 찾을 수 있습니다');
+        }
+        // 표식 결과 — 사람이 정한 것인데 꼬리표가 붙었으면 원문을 따옴표로 붙여 다시 보낸다(jedi-save «핵심 결정» 줄 쓰는 법)
+        if (ai && ai.applied) {
+          console.log(`journal-ingest: 핵심 결정 ${ai.checked}줄 — 원문 확인 ${ai.grounded} · [AI 제안] ${ai.marked_ai} · [원문 미확인] ${ai.marked_mismatch}`);
         }
       } else if (r.noNotion) {
         fail(`서버 응답 ${res.statusCode} ${s.slice(0, 200)}`);
