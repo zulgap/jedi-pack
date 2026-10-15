@@ -52,7 +52,41 @@ function findTranscript(sid) {
   return null;
 }
 
-// 유저 프롬프트 추출 (string content = 타이핑, array = tool_result 제외 + 커맨드/시스템 노이즈 skip)
+// 배열 content(사진 붙인 말 등) → 텍스트 조각을 '\n' 으로 합친 원문. 도구 결과 턴이면 null.
+// @AI:DEPENDS 🔴 hooks/response-capture.js textOfContent · prompt-capture.js promptTextOfEntry 와 «같은 규칙»이어야
+//   turn_uuid 가 원장 행과 맞는다. 2026-10-14 운영 prompt_log 실측: 사진 붙인 말 6건 · 사진 붙인 «도중» 말 3건 전부
+//   이 규칙(text 조각만 '\n' 합치기 + trim)으로 계산한 번호가 원장에 있었다(HIT 9/9).
+function textOfParts(parts) {
+  if (!Array.isArray(parts)) return null;
+  if (parts.some((c) => c && c.type === 'tool_result')) return null;
+  const texts = parts.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text);
+  return texts.length ? texts.join('\n') : null;
+}
+
+/**
+ * 대화기록 한 줄 → 사람이 한 말 {text(trim 전), ts} 또는 null. 순수 함수.
+ * @AI:INTENT 2026-10-14 실측 — 옛 거름(`type==='user' && content 가 문자열`)은 ① 작업 도중 보낸 말
+ *   (`attachment.type==='queued_command'`) ② 사진 붙인 말(content 가 배열)을 통째로 빼서 도중 말 42건 중 39건이 샜다.
+ *   그 말에 «왜»가 제일 많이 담긴다(지켜보다 고치라고 끼어드는 말).
+ * @AI:CONSTRAINT 사람 말만 — 도중 말은 `origin.kind==='human'` 만(task-notification·peer 는 기계가 넣은 것),
+ *   isMeta(스킬 전개문·훅 주입)·isSidechain(서브에이전트) 제외. UserPromptSubmit 훅이 원장에 올리는 범위와 같다.
+ */
+function promptOfEntry(ev) {
+  if (!ev || typeof ev !== 'object' || ev.isSidechain === true) return null;
+  const a = ev.attachment;
+  if (ev.type === 'attachment' && a && a.type === 'queued_command') {
+    if (!a.origin || a.origin.kind !== 'human') return null;
+    // 2026-10-14 실측: 도중 말 77건 중 74건이 문자열, 3건이 배열([Image #N] 글 + 사진) — 훅은 둘 다 «글»로 받는다
+    const text = typeof a.prompt === 'string' ? a.prompt : textOfParts(a.prompt);
+    return text == null ? null : { text, ts: a.timestamp || ev.timestamp || null };
+  }
+  if (ev.type !== 'user' || ev.isMeta === true || !ev.message) return null;
+  const c = ev.message.content;
+  const text = typeof c === 'string' ? c : textOfParts(c);
+  return text == null ? null : { text, ts: ev.timestamp || null };
+}
+
+// 유저 프롬프트 추출 — 타이핑한 말 + 사진 붙인 말 + 작업 도중 보낸 말. 커맨드/시스템 노이즈 skip.
 function extractPrompts(transcriptPath) {
   const out = [];
   const seen = new Set();
@@ -62,14 +96,15 @@ function extractPrompts(transcriptPath) {
     if (!line.trim()) continue;
     let ev;
     try { ev = JSON.parse(line); } catch { continue; }
-    if (ev.type !== 'user' || !ev.message || typeof ev.message.content !== 'string') continue;
-    const t = ev.message.content.trim();
-    if (!t || t.length < 2) continue;
+    const p = promptOfEntry(ev);
+    if (!p) continue;
+    const t = p.text.trim();
+    if (!t || t.length < 2) continue; // 훅도 2자 미만은 안 올린다(「네」「?」) — 원장에 없는 번호를 만들지 않는다
     if (t.startsWith('<') || t.startsWith('Caveat:') || t.startsWith('[Request interrupted')
       || t.startsWith('This session is being continued')) continue;
     if (seen.has(t)) continue; // 같은 발화 중복 제거
     seen.add(t);
-    out.push({ text: t, ts: ev.timestamp || null, cwd: ev.cwd || null });
+    out.push({ text: t, ts: p.ts, cwd: ev.cwd || null });
   }
   return out;
 }
@@ -205,4 +240,4 @@ if (require.main === module) (async () => {
   console.log(`collect-prompts: 프롬프트 ${prompts.length}건 중 신규 ${sent} / 기존(멱등) ${deduped} / 실패 ${failed} → prompt_log`);
 })().catch((e) => { console.log('collect-prompts: 예외(무시)', e.message); });
 
-module.exports = { extractPrompts, turnUuid, buildWhyList, resolveWhyPicks, WHY_MAX };
+module.exports = { extractPrompts, promptOfEntry, turnUuid, buildWhyList, resolveWhyPicks, WHY_MAX };

@@ -10,7 +10,17 @@
 //   node journal-ingest.js new "<제목>" "<한줄 요약>" --body-file <본문.md> --no-notion          ← 노션 없는 회사
 //   … --whys-file <why.json>  「왜」 번호+구절(collect-prompts.js --why-pick 이 만든 파일 · 선택)
 //   … --object <객체 uuid> [--object-alias "<본문 속 이름>"]  이 저널의 대상 객체(선택 · 2026-10-06)
+//   … --object-none "<이유 한 줄>"  묶을 대상이 정말 없다고 사람이 정했다(2026-10-15 · 판단OS #4818)
+//   … --project <프로젝트 uuid> [--scope <관리번호 uuid>]  어느 프로젝트·관리번호 일인가(선택 · 2026-10-10)
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
+//
+// ── 대상 관문 (2026-10-15 · 사장님 「네」) ──
+// @AI:CONSTRAINT 🔴 `--object <id>` 도 `--object-none "<이유>"` 도 없으면 보내지 않고 exit 3 (--dry-run 예외).
+//   실측(대표 /저장 10/6~10/15): 저장 238번 중 대상을 고른 것 21번(9%) — 안 고르면 서버 매처가 낱말로 추측해
+//   엉뚱한 대상에 붙였다(고객사 A 채널 작업 → 고객사 B). 「건너뜀」과 「진짜 없음」을 가르려고 이유를 값으로 받는다.
+// @AI:DEPENDS 🔴 관문은 «이 규칙을 아는 jedi-save 가 설치된 PC» 에서만 막는다(objectGateActive). 이 파일은 서버 /pack 으로
+//   main 머지 즉시 고객 PC 에도 가지만, 고객의 jedi-save 문구는 jedi-pack(별도 배포 · 사장님 결정)에서 온다 →
+//   옛 문구만 있는 PC 에서 막으면 저장이 영문 모르게 멈춘다. 그 PC 는 경고 한 줄만 하고 종전대로 보낸다.
 //
 // ── 맥락 계층 (2026-10-06 · 판단OS #4331 · #4335 의 팀팩 쪽) ──
 // @AI:INTENT session_uuid — Claude Code 가 주는 CLAUDE_CODE_SESSION_ID 를 함께 보낸다. 서버가 이 세션의 사람 발화와
@@ -53,11 +63,60 @@ const CONTENT_CAP = 8000;
 // 「어디서 이어받나」를 담는 섹션. 5섹션의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias']);
+const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope']);
 // @AI:DEPENDS 서버 server.js /mcp/ext/journal-ingest object_alias .slice(0, 40) — 넘으면 서버가 잘라 «본문에 없는 이름»이 된다
 const MAX_OBJECT_ALIAS = 40;
+// @AI:DEPENDS 서버 /mcp/ext/journal-ingest object_none_reason ≤200자(판단OS #4818)
+const MAX_OBJECT_NONE_REASON = 200;
+const GATE_EXIT = 3;
+// 관문을 켜는 표식 — 설치된 jedi-save / wrapup-dev 문구에 이 낱말이 있으면 «규칙을 아는 PC»다.
+const GATE_MARKER = '--object-none';
+const GATE_SKILLS = [['jedi-core@', 'jedi-save'], ['dev-pack@', 'wrapup-dev']];
+
+/**
+ * 대상 관문 문구 — 통과면 null. 순수 함수(검사용).
+ * --object 또는 --object-none 이 있거나 --dry-run 이면 통과.
+ */
+function objectGateMessage(argv) {
+  if (argv.includes('--object') || argv.includes('--object-none') || argv.includes('--dry-run')) return null;
+  return [
+    'journal-ingest: 🔴 대상(이름표) 단계를 건너뛰었습니다 — 저장하지 않고 멈춥니다.',
+    '  1) 찾기: search_business_objects{keyword:"<고객사·상품·브랜드 이름>"}  (별칭도 찾아짐)',
+    '  2) 있으면: 같은 명령 끝에 --object <id> --object-alias "<본문 속 이름>"',
+    '  3) 묶을 대상이 정말 없으면: --object-none "<이유 한 줄>" (예: "회사 내부 일" · "이름표 없음: <이름>")',
+  ];
+}
+
+/**
+ * 이 PC 에 «대상 규칙을 아는» jedi-save(또는 wrapup-dev)가 설치돼 있나. 설치 장부(installed_plugins.json)의
+ * 설치 폴더에서 스킬 문구를 읽어 표식을 찾는다. 못 읽으면 false(= 막지 않음 — 위 @AI:DEPENDS).
+ * env JOURNAL_OBJECT_GATE=on|off 가 있으면 그 값(검사·비상 끄기용).
+ */
+function objectGateActive(deps = {}) {
+  const env = deps.env || process.env;
+  const forced = String(env.JOURNAL_OBJECT_GATE || '').toLowerCase();
+  if (forced === 'on') return true;
+  if (forced === 'off') return false;
+  const home = deps.home || os.homedir();
+  const readFile = deps.readFile || ((p) => fs.readFileSync(p, 'utf8'));
+  try {
+    const reg = JSON.parse(readFile(path.join(home, '.claude', 'plugins', 'installed_plugins.json')));
+    const plugins = (reg && reg.plugins) || {};
+    for (const [key, entries] of Object.entries(plugins)) {
+      const hit = GATE_SKILLS.find(([prefix]) => key.startsWith(prefix));
+      if (!hit) continue;
+      for (const e of Array.isArray(entries) ? entries : []) {
+        if (!e || !e.installPath) continue;
+        try {
+          if (readFile(path.join(e.installPath, 'skills', hit[1], 'SKILL.md')).includes(GATE_MARKER)) return true;
+        } catch (_) { /* 다음 설치본 */ }
+      }
+    }
+  } catch (_) { /* 장부 없음 → 막지 않음 */ }
+  return false;
+}
 
 /**
  * 5섹션 본문을 «미해결·다음 먼저» 순서로 재배열한다. 결정론 — LLM 0.
@@ -95,7 +154,10 @@ function buildRequest(argv, deps = {}) {
       if (FLAGS_WITH_VALUE.has(a)) {
         const v = argv[i + 1];
         // 🔴 값 없이 플래그만 오면 멈춘다 — 조용히 무시하면 「묶였다」고 믿는다
-        if (!v || v.startsWith('--')) return { ok: false, error: `${a} 뒤에 ${a.startsWith('--object') ? '값' : '경로'}이 없습니다` };
+        if (!v || v.startsWith('--')) {
+          if (a === '--object-none') return { ok: false, error: '--object-none 뒤에 이유가 없습니다(예: "회사 내부 일" · "이름표 없음: <이름>")' };
+          return { ok: false, error: `${a} 뒤에 ${a.startsWith('--object') ? '값' : '경로'}이 없습니다` };
+        }
         flags[a] = v; i++;
       } else {
         flags[a] = true;
@@ -163,6 +225,27 @@ function buildRequest(argv, deps = {}) {
     objectAlias = flags['--object-alias'].trim();
     if (objectAlias.length > MAX_OBJECT_ALIAS) return { ok: false, error: `--object-alias 가 ${MAX_OBJECT_ALIAS}자를 넘습니다` };
   }
+  // ── 대상 없음 (2026-10-15 · 판단OS #4818) — 서버는 이 저널·「왜」 항목에서 기계 추측(매처)을 돌리지 않는다.
+  // @AI:CONSTRAINT --object 와 함께 오면 멈춘다(서버는 object_id 가 이기지만, 둘 다 쓴 것은 사람이 헷갈린 것이다).
+  let objectNoneReason = null;
+  if (flags['--object-none']) {
+    if (flags['--object']) return { ok: false, error: '--object-none 과 --object 는 함께 쓰지 않습니다 — 대상이 있으면 --object 만' };
+    objectNoneReason = String(flags['--object-none']).trim().slice(0, MAX_OBJECT_NONE_REASON);
+    if (!objectNoneReason) return { ok: false, error: '--object-none 뒤에 이유가 없습니다(예: "회사 내부 일" · "이름표 없음: <이름>")' };
+  }
+  // ── 프로젝트·관리번호 (선택 · 2026-10-10 판단OS #4613) — 서버가 «이 회사의 사용 중 프로젝트»·«그 프로젝트의 사용 중
+  //   관리번호»인지 확인하고 붙인다(아니면 무시 — 관리번호는 빈칸). 여기서는 모양만 본다(fail-closed).
+  let projectId = null;
+  let scopeId = null;
+  if (flags['--project']) {
+    if (!UUID_RE.test(flags['--project'])) return { ok: false, error: `--project 값이 프로젝트 번호(uuid) 형식이 아닙니다: ${flags['--project']}` };
+    projectId = flags['--project'].toLowerCase();
+  }
+  if (flags['--scope']) {
+    if (!projectId) return { ok: false, error: '--scope 는 --project 와 함께만 씁니다(관리번호는 프로젝트 안의 칸)' };
+    if (!UUID_RE.test(flags['--scope'])) return { ok: false, error: `--scope 값이 관리번호(uuid) 형식이 아닙니다: ${flags['--scope']}` };
+    scopeId = flags['--scope'].toLowerCase();
+  }
   const sessionUuid = UUID_RE.test(String(sessionId || '')) ? String(sessionId).toLowerCase() : null;
 
   const projected = `${title}\n${text}`.trim();
@@ -171,6 +254,9 @@ function buildRequest(argv, deps = {}) {
   if (whys) obj.whys = whys;
   if (objectId) obj.object_id = objectId;
   if (objectAlias) obj.object_alias = objectAlias;
+  if (objectNoneReason) { obj.object_none = true; obj.object_none_reason = objectNoneReason; }
+  if (projectId) obj.project_id = projectId;
+  if (scopeId) obj.scope_id = scopeId;
   if (sessionUuid) obj.session_uuid = sessionUuid;
   const payload = JSON.stringify(obj);
   return {
@@ -179,7 +265,7 @@ function buildRequest(argv, deps = {}) {
     willTruncate: projected.length > CONTENT_CAP,
     hoistedLength,
     whys, whysWarning,
-    objectId, objectAlias, sessionUuid,
+    objectId, objectAlias, objectNoneReason, projectId, scopeId, sessionUuid,
     payload,
   };
 }
@@ -206,13 +292,24 @@ function main() {
   const noNotionArg = process.argv.includes('--no-notion');
   if (!r.ok) {
     if (r.usage) {
-      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] [--object <uuid> [--object-alias <name>]] [--no-notion] [--dry-run]');
+      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] (--object <uuid> [--object-alias <name>] | --object-none "<이유>") [--project <uuid> [--scope <uuid>]] [--no-notion] [--dry-run]');
     } else {
       console.error(`journal-ingest: ${r.error}`);
     }
     // 노션 회사: 사용법 오류도 스킬을 막지 않는다(종전). 노션 없는 회사: 저장이 안 됐으니 실패로 끝낸다.
     process.exit(noNotionArg ? 1 : 0);
   }
+
+  // 대상 관문 — 노션 회사 경로도 멈춘다(exit 3): 노션 사본은 남지만, 건너뛴 채 색인되면 서버가 대상을 낱말로 추측한다.
+  const gate = objectGateMessage(process.argv.slice(2));
+  if (gate) {
+    if (objectGateActive()) {
+      console.error(gate.join('\n'));
+      process.exit(GATE_EXIT);
+    }
+    console.log('journal-ingest: ⚠️ 대상(--object 또는 --object-none "<이유>")이 없습니다 — 이번엔 그대로 보냅니다');
+  }
+  if (r.objectNoneReason) console.log(`journal-ingest: 대상 없음 — ${r.objectNoneReason}`);
 
   if (r.whysWarning) console.log(`journal-ingest: ⚠️ ${r.whysWarning}`);
   if (r.whys) console.log(`journal-ingest: 「왜」 ${r.whys.length}건 함께 보냄 — 서버가 대화 원장과 대조해 확인된 것만 판단 기록으로 남깁니다`);
@@ -242,7 +339,7 @@ function main() {
     failed = true;
     if (r.noNotion) {
       console.log(`journal-ingest: ❌ 저장되지 않았습니다 — ${msg}`);
-      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}`);
+      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}${r.objectNoneReason ? ` --object-none ${JSON.stringify(r.objectNoneReason)}` : ''}${r.projectId ? ` --project ${r.projectId}` : ''}${r.scopeId ? ` --scope ${r.scopeId}` : ''}`);
       process.exitCode = 1;
     } else {
       console.log(`journal-ingest: ⚠️ ${msg}${tail}`);
@@ -306,5 +403,5 @@ function main() {
   req.end();
 }
 
-module.exports = { buildRequest, hoistPrioritySection, CONTENT_CAP };
+module.exports = { buildRequest, hoistPrioritySection, objectGateMessage, objectGateActive, CONTENT_CAP };
 if (require.main === module) main();

@@ -64,9 +64,20 @@ Call `notion-create-pages`:
 
 🔴 **A Notion row alone is not searchable.** Using the **page id** from the create response:
 
+**First, pick the target (required — 2026-10-15).** Every save must carry either `--object <id>` or `--object-none "<reason>"`.
+Without one the command **stops with exit code 3** and saves nothing (otherwise the server guesses a target from words and guesses wrong).
+1. Dev work is usually not about one client/product → `--object-none "판단OS 개발 일반"`.
+2. Only if the session was clearly for one client/product/brand: look it up with `mcp__jedi__search_business_objects` and,
+   if it is in the results, use `--object <id>` (add `--object-alias "<name used in the journal>"` if the name differs).
+3. If that name tag should exist but doesn't → `--object-none "이름표 없음: <name>"` and add a line to **Blockers / questions for the boss**.
+   🔴 Never create name tags yourself.
+4. Never pass both flags. The reason must not be empty.
+
 ```
-f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>"
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>" --object-none "판단OS 개발 일반"
 ```
+- Exit code 3 = the target step was skipped → add the flag and run again (this is the one failure you do **not** just relay).
+- In your report, add one line: `대상: <name tag>` or `대상: 없음 — <reason>`.
 - This is what makes the entry findable later (recall / context loaders).
 - **Authorship is resolved server-side from your token** — do not send a name.
 - If it fails, the journal row is already saved. Just **relay the output** and move on.
