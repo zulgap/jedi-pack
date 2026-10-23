@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { assembleHtml } from './compose-thumbnail.mjs';
+import { assembleHtml, guidanceLines } from './compose-thumbnail.mjs';
 
 const BASE = { bg: 'https://example.com/bg.png', title: '가나다라마|**바사아자차**' };
 
@@ -472,4 +472,51 @@ test('넓적한 폰트 2종(jua·gasoek)이 등록돼 있다', () => {
     const { html } = assembleHtml({ ...BASE, font });
     assert.ok(html.includes(`--font-family:${family}`), `${font} 미등록`);
   }
+});
+
+// ── 회사 판단(guidance) 줄 — 2026-10-11 ─────────────────────
+test('guidance 가 오면 회사·내 판단을 한 줄씩 · 이유 동봉', () => {
+  const lines = guidanceLines({ success: true, data: { image_url: 'u' }, guidance: [
+    { id: '1', text: '썸네일 완성본은 항상 3장 — 서로 다른 안', why: null },
+    { id: '2', text: '강조색 1색', why: '채널 통일', scope: 'me' },
+  ] });
+  assert.deepEqual(lines, ['📌 회사 판단: 썸네일 완성본은 항상 3장 — 서로 다른 안', '📌 내 판단: 강조색 1색 (이유: 채널 통일)']);
+});
+
+test('guidance 없으면 0줄(옛 서버 답 그대로)', () => {
+  assert.deepEqual(guidanceLines({ success: true, data: { image_url: 'u' } }), []);
+  assert.deepEqual(guidanceLines(null), []);
+});
+
+test('빠진 판단 수·팀원 제안도 줄로', () => {
+  const lines = guidanceLines({ guidance_more: { count: 2, how: 'get_company_context 로 전부 받는다' }, guidance_proposal: { text: '배경은 실사', from: '나래', how: '한 번만 묻는다' } });
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].includes('판단 2개 더'));
+  assert.ok(lines[1].includes('나래 제안(아직 판단 아님): 배경은 실사'));
+});
+
+test('🔴 판단 줄은 stderr 로만 — 마지막 stdout 줄 = image_url 계약', () => {
+  const src = fs.readFileSync(new URL('./compose-thumbnail.mjs', import.meta.url), 'utf8');
+  const i = src.indexOf('for (const line of guidanceLines(body)) console.error(line);');
+  assert.ok(i > 0, '판단 줄 출력이 있다');
+  assert.ok(src.indexOf('console.log(body.data.image_url);') > i, 'image_url 이 판단 줄보다 뒤(마지막 줄)');
+  assert.equal(src.split('console.log(').length - 1, 1, 'stdout 은 image_url 한 줄뿐');
+});
+
+// 2026-10-22 — 배경·보조 그림 출처(저작권). 안경투 9월 이미지 포털 사진 경고 뒤 「썸네일에도 검사」
+test('출처 칸 — ai·self·원본 주소를 기록으로 바꾸고, 빈 칸은 missing', async () => {
+  const { rightsRecords } = await import('./compose-thumbnail.mjs');
+  const r = rightsRecords({ bg: 'https://x/bg.png', 'bg-source': 'ai', 'bg-people': 'none', inset: 'https://x/logo.png' });
+  assert.equal(r.length, 2);
+  assert.deepEqual([r[0].rec.ai, r[0].rec.people, r[0].missing], [true, 'none', false]);
+  assert.equal(r[1].missing, true, '--inset-source 없으면 missing');
+  const u = rightsRecords({ bg: 'b', 'bg-source': 'https://commons.wikimedia.org/wiki/File:A.jpg', 'bg-license': 'CC BY 4.0', 'bg-credit': 'x · CC BY 4.0' });
+  assert.equal(u[0].rec.source_url, 'https://commons.wikimedia.org/wiki/File:A.jpg');
+  assert.equal(rightsRecords({ bg: 'b', 'bg-source': 'self' })[0].rec.self, true);
+});
+
+test('렌더 요청보다 출처 검사가 먼저다', () => {
+  const src = fs.readFileSync(new URL('./compose-thumbnail.mjs', import.meta.url), 'utf8');
+  const main = src.slice(src.indexOf('async function main()'));
+  assert.ok(main.indexOf('await checkRights(o)') > 0 && main.indexOf('await checkRights(o)') < main.indexOf('render-thumbnail'));
 });

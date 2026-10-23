@@ -92,19 +92,28 @@ function extractPrompts(transcriptPath) {
   const seen = new Set();
   let lines = [];
   try { lines = fs.readFileSync(transcriptPath, 'utf8').split('\n'); } catch { return out; }
+  // @AI:INTENT prevAi = 그 말 «직전» AI 답 글(사이드체인·도구 결과 제외) — 「좋아요」로 승인한 AI 제안을 «왜»로 고를 때
+  //   구절을 여기서 먼저 대조한다(2026-10-17 why-at-change 3단계). 서버도 자기 사본(직전 턴 response_text)으로 한 번 더 대조한다.
+  let aiBuf = [];
   for (const line of lines) {
     if (!line.trim()) continue;
     let ev;
     try { ev = JSON.parse(line); } catch { continue; }
+    if (ev && ev.type === 'assistant' && ev.isSidechain !== true && ev.message && Array.isArray(ev.message.content)) {
+      for (const c of ev.message.content) if (c && c.type === 'text' && typeof c.text === 'string' && c.text.trim()) aiBuf.push(c.text);
+      continue;
+    }
     const p = promptOfEntry(ev);
     if (!p) continue;
     const t = p.text.trim();
     if (!t || t.length < 2) continue; // 훅도 2자 미만은 안 올린다(「네」「?」) — 원장에 없는 번호를 만들지 않는다
     if (t.startsWith('<') || t.startsWith('Caveat:') || t.startsWith('[Request interrupted')
       || t.startsWith('This session is being continued')) continue;
+    const prevAi = aiBuf.join('\n');
+    aiBuf = [];
     if (seen.has(t)) continue; // 같은 발화 중복 제거
     seen.add(t);
-    out.push({ text: t, ts: p.ts, cwd: ev.cwd || null });
+    out.push({ text: t, ts: p.ts, cwd: ev.cwd || null, prevAi });
   }
   return out;
 }
@@ -153,14 +162,24 @@ const WHY_SHOW_CHARS = 600;
 const WHY_MAX = 3;          // 사장님 확정 「가」 — 세션당 3개
 const collapse = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
 
+// 「좋아요」·「그렇게 해요」 같은 짧은 승인 — 이유는 그 직전 AI 제안에 있다(2026-10-17 why-at-change 3단계 · 사장님
+//   「당신이 추천한 걸 내가 결정한 것도 Y이긴 합니다. 다만 구분은 명확하게」). 고를 땐 source:"ai_proposal" 로 «AI 제안 → 승인»이 된다.
+const WHY_PROPOSAL_SHOW = 500;
+
 function buildWhyList(prompts) {
   return prompts
-    .map((p, i) => ({ n: i + 1, text: p.text }))
-    .filter((x) => x.text.length >= WHY_MIN_CHARS)
-    .map((x) => ({ n: x.n, text: x.text.length > WHY_SHOW_CHARS ? `${x.text.slice(0, WHY_SHOW_CHARS)}…(이하 생략)` : x.text }));
+    .map((p, i) => ({ n: i + 1, text: p.text, prevAi: p.prevAi || '' }))
+    .filter((x) => x.text.length >= WHY_MIN_CHARS || collapse(x.prevAi))
+    .map((x) => {
+      const text = x.text.length > WHY_SHOW_CHARS ? `${x.text.slice(0, WHY_SHOW_CHARS)}…(이하 생략)` : x.text;
+      if (x.text.length >= WHY_MIN_CHARS) return { n: x.n, text };
+      const prev = collapse(x.prevAi);
+      return { n: x.n, text, approval: true, prevAi: prev.length > WHY_PROPOSAL_SHOW ? `…${prev.slice(-WHY_PROPOSAL_SHOW)}` : prev };
+    });
 }
 
-/** picks=[{n, reason_quote}] → {ok:[{n, turn_uuid, reason_quote}], rejected:[{n, why}]} — 순수 함수 */
+/** picks=[{n, reason_quote, source?}] → {ok:[{n, turn_uuid, reason_quote, source?}], rejected:[{n, why}]} — 순수 함수
+ *  source:"ai_proposal" = 구절이 그 말 «직전 AI 답» 안에 있다(AI 제안 → 승인). 구절이 사람 말 안에 있으면 사람 직접으로 둔다(서버와 같은 규칙). */
 function resolveWhyPicks(prompts, sid, picks) {
   const ok = []; const rejected = [];
   const seen = new Set();
@@ -170,11 +189,14 @@ function resolveWhyPicks(prompts, sid, picks) {
     const p = Number.isInteger(n) ? prompts[n - 1] : null;
     if (!p) { rejected.push({ n: pk && pk.n, why: '그런 번호가 없습니다' }); continue; }
     if (quote.length < 4) { rejected.push({ n, why: '이유 구절이 너무 짧습니다' }); continue; }
-    if (!collapse(p.text).includes(quote)) { rejected.push({ n, why: '구절이 그 말 안에 글자 그대로 없습니다(바꿔 쓰지 말고 그대로 떼어 오세요)' }); continue; }
+    const inOwn = collapse(p.text).includes(quote);
+    const asProposal = !inOwn && !!pk && pk.source === 'ai_proposal';
+    if (asProposal && !collapse(p.prevAi).includes(quote)) { rejected.push({ n, why: '구절이 그 말 직전 AI 답 안에 글자 그대로 없습니다(제안 원문을 그대로 떼어 오세요)' }); continue; }
+    if (!inOwn && !asProposal) { rejected.push({ n, why: '구절이 그 말 안에 글자 그대로 없습니다(바꿔 쓰지 말고 그대로 떼어 오세요 · AI 제안을 승인한 것이면 "source":"ai_proposal")' }); continue; }
     if (seen.has(n)) { rejected.push({ n, why: '같은 번호를 두 번 골랐습니다' }); continue; }
     if (ok.length >= WHY_MAX) { rejected.push({ n, why: `세션당 ${WHY_MAX}개까지입니다` }); continue; }
     seen.add(n);
-    ok.push({ n, turn_uuid: turnUuid(`${sid}:${p.text}`), reason_quote: quote });
+    ok.push({ n, turn_uuid: turnUuid(`${sid}:${p.text}`), reason_quote: quote, ...(asProposal ? { source: 'ai_proposal' } : {}) });
   }
   return { ok, rejected };
 }
@@ -192,7 +214,9 @@ function runWhyMode(sid) {
   if (process.argv.includes('--why-list')) {
     const list = buildWhyList(prompts);
     console.log(`collect-prompts [왜 후보]: 이번 세션 사람 말 ${prompts.length}건 중 ${list.length}건 (짧은 말 제외 · 번호는 --why-pick 에 그대로)`);
-    list.forEach((x) => console.log(`\n#${x.n}\n${x.text}`));
+    list.forEach((x) => console.log(x.approval
+      ? `\n#${x.n} [승인] 「${x.text}」\n  ↳ 직전 AI 답: ${x.prevAi}`
+      : `\n#${x.n}\n${x.text}`));
     return;
   }
   let picks;
@@ -200,9 +224,9 @@ function runWhyMode(sid) {
   catch (e) { console.log(`collect-prompts: --why-pick 형식 오류(JSON 배열 [{"n":3,"reason_quote":"…"}]) — ${e.message}`); process.exitCode = 1; return; }
   const { ok, rejected } = resolveWhyPicks(prompts, sid, picks);
   const out = argValue('--out') || path.join(os.tmpdir(), `jedi-why-${(sid || 'nosid').slice(0, 8)}.json`);
-  fs.writeFileSync(out, JSON.stringify(ok.map(({ turn_uuid, reason_quote }) => ({ turn_uuid, reason_quote })), null, 2));
+  fs.writeFileSync(out, JSON.stringify(ok.map(({ turn_uuid, reason_quote, source }) => ({ turn_uuid, reason_quote, ...(source ? { source } : {}) })), null, 2));
   rejected.forEach((r) => console.log(`  ✗ #${r.n} — ${r.why}`));
-  ok.forEach((r) => console.log(`  ✓ #${r.n} — ${r.reason_quote.slice(0, 60)}`));
+  ok.forEach((r) => console.log(`  ✓ #${r.n}${r.source ? ' [AI 제안 → 승인]' : ''} — ${r.reason_quote.slice(0, 60)}`));
   console.log(`collect-prompts: 「왜」 확인 ${ok.length}건 · 버림 ${rejected.length}건 → ${out}`);
 }
 

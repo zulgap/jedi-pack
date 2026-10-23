@@ -12,6 +12,7 @@
 //   … --object <객체 uuid> [--object-alias "<본문 속 이름>"]  이 저널의 대상 객체(선택 · 2026-10-06)
 //   … --object-none "<이유 한 줄>"  묶을 대상이 정말 없다고 사람이 정했다(2026-10-15 · 판단OS #4818)
 //   … --project <프로젝트 uuid> [--scope <관리번호 uuid>]  어느 프로젝트·관리번호 일인가(선택 · 2026-10-10)
+//   … --nature dev|partner|scm|brand|client|other  이 일의 성격(2026-10-17 · 판단OS #4929) — 브랜드 이름보다 먼저 정한다
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
 //
 // ── 대상 관문 (2026-10-15 · 사장님 「네」) ──
@@ -21,6 +22,15 @@
 // @AI:DEPENDS 🔴 관문은 «이 규칙을 아는 jedi-save 가 설치된 PC» 에서만 막는다(objectGateActive). 이 파일은 서버 /pack 으로
 //   main 머지 즉시 고객 PC 에도 가지만, 고객의 jedi-save 문구는 jedi-pack(별도 배포 · 사장님 결정)에서 온다 →
 //   옛 문구만 있는 PC 에서 막으면 저장이 영문 모르게 멈춘다. 그 PC 는 경고 한 줄만 하고 종전대로 보낸다.
+//
+// ── 일의 성격 관문 (2026-10-17 · 판단OS #4929) ──
+// @AI:CONSTRAINT 🔴 `--nature` 가 없으면 보내지 않고 exit 3 (--dry-run 예외) — 사장님 「캠핑오너스이긴 하지만 개발인 경우도 있고
+//   파트너인 경우도 있고 SCM인 경우도 있고 이런 거 다 구분해야 됩니다」. 창고 알림 세션이 제목의 브랜드 이름만 보고 브랜드 칸에 들어갔다.
+//   값이 6개 중 하나가 아니면 관문이 꺼진 PC 에서도 멈춘다(새 문구를 쓰다 틀린 것이므로).
+// @AI:DEPENDS 판정은 서버 한 벌(unified-agent/shared/journal-nature.js) — 여기서 성격과 폴더가 맞는지 다시 판정하지 않는다.
+//   서버가 고른 프로젝트 종류와 안 맞으면 HTTP 422 {error, hint} → 저장 안 됨 · exit 3. 같은 회사 안에서 칸을 바꿔 다시 보내면
+//   응답 refile.refiled 에 함께 옮겨진 행 수가 온다 — 0 이거나 error 면 「옮겼다」고 말하지 않는다.
+// @AI:DEPENDS 대상 관문과 같은 이유로 «이 규칙을 아는 jedi-save/wrapup-dev 가 설치된 PC» 에서만 막는다(표식 '--nature').
 //
 // ── 맥락 계층 (2026-10-06 · 판단OS #4331 · #4335 의 팀팩 쪽) ──
 // @AI:INTENT session_uuid — Claude Code 가 주는 CLAUDE_CODE_SESSION_ID 를 함께 보낸다. 서버가 이 세션의 사람 발화와
@@ -63,9 +73,23 @@ const CONTENT_CAP = 8000;
 // 「어디서 이어받나」를 담는 섹션. 5섹션의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope']);
+const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
+// @AI:DEPENDS 서버 shared/journal-nature.js 의 성격 6개 — 서버가 받는 값과 같아야 한다(판단OS #4929)
+const NATURE_KEYS = ['dev', 'partner', 'scm', 'brand', 'client', 'other'];
+// 누구의 사업 이름표 — 모양만 본다. 어떤 이름표가 있는지는 서버 한 곳이 정한다(모르는 값이면 422 business_invalid 로 멈춘다).
+// @AI:CONSTRAINT 회사 이름표 목록을 여기 적지 않는다 — 이 파일은 모든 고객 PC 에 깔린다(회사 고유값 금지).
+const BUSINESS_RE = /^[a-z][a-z0-9-]{1,30}$/;
+const NATURE_GUIDE = [
+  '  브랜드 이름이 아니라 이 일이 «실제로 무엇이었나»로 고르세요:',
+  '    --nature dev      판단OS·고객 서비스 프로그램을 만들거나 고침 → 「… 개발」 폴더',
+  '    --nature partner  창고·포워딩·관세사와 주고받는 일 → 그 파트너 폴더',
+  '    --nature scm      발주·입고·재고·수입 원가 → 파트너·물류 폴더',
+  '    --nature brand    광고·상세페이지·카피·가격·리뷰 → 그 브랜드 폴더',
+  '    --nature client   고객사 대행·마케팅 → 그 고객 폴더',
+  '    --nature other    재무·영업·지원사업 등 그 밖',
+];
 // @AI:DEPENDS 서버 server.js /mcp/ext/journal-ingest object_alias .slice(0, 40) — 넘으면 서버가 잘라 «본문에 없는 이름»이 된다
 const MAX_OBJECT_ALIAS = 40;
 // @AI:DEPENDS 서버 /mcp/ext/journal-ingest object_none_reason ≤200자(판단OS #4818)
@@ -73,6 +97,7 @@ const MAX_OBJECT_NONE_REASON = 200;
 const GATE_EXIT = 3;
 // 관문을 켜는 표식 — 설치된 jedi-save / wrapup-dev 문구에 이 낱말이 있으면 «규칙을 아는 PC»다.
 const GATE_MARKER = '--object-none';
+const NATURE_GATE_MARKER = '--nature';
 const GATE_SKILLS = [['jedi-core@', 'jedi-save'], ['dev-pack@', 'wrapup-dev']];
 
 /**
@@ -90,13 +115,31 @@ function objectGateMessage(argv) {
 }
 
 /**
+ * 일의 성격 관문 문구 — 통과면 null. 순수 함수(검사용). --nature 가 있거나 --dry-run 이면 통과
+ * (값이 맞는지는 buildRequest 가 본다).
+ */
+function natureGateMessage(argv) {
+  if (argv.includes('--nature') || argv.includes('--dry-run')) return null;
+  return ['journal-ingest: 🔴 일의 성격 단계를 건너뛰었습니다 — 저장하지 않고 멈춥니다.', ...NATURE_GUIDE];
+}
+
+/**
  * 이 PC 에 «대상 규칙을 아는» jedi-save(또는 wrapup-dev)가 설치돼 있나. 설치 장부(installed_plugins.json)의
  * 설치 폴더에서 스킬 문구를 읽어 표식을 찾는다. 못 읽으면 false(= 막지 않음 — 위 @AI:DEPENDS).
  * env JOURNAL_OBJECT_GATE=on|off 가 있으면 그 값(검사·비상 끄기용).
  */
 function objectGateActive(deps = {}) {
+  return skillGateActive(deps, GATE_MARKER, 'JOURNAL_OBJECT_GATE');
+}
+
+/** 일의 성격 관문 켜짐 — 설치된 jedi-save/wrapup-dev 문구에 '--nature' 가 있을 때만. env JOURNAL_NATURE_GATE=on|off. */
+function natureGateActive(deps = {}) {
+  return skillGateActive(deps, NATURE_GATE_MARKER, 'JOURNAL_NATURE_GATE');
+}
+
+function skillGateActive(deps, marker, envKey) {
   const env = deps.env || process.env;
-  const forced = String(env.JOURNAL_OBJECT_GATE || '').toLowerCase();
+  const forced = String(env[envKey] || '').toLowerCase();
   if (forced === 'on') return true;
   if (forced === 'off') return false;
   const home = deps.home || os.homedir();
@@ -110,7 +153,7 @@ function objectGateActive(deps = {}) {
       for (const e of Array.isArray(entries) ? entries : []) {
         if (!e || !e.installPath) continue;
         try {
-          if (readFile(path.join(e.installPath, 'skills', hit[1], 'SKILL.md')).includes(GATE_MARKER)) return true;
+          if (readFile(path.join(e.installPath, 'skills', hit[1], 'SKILL.md')).includes(marker)) return true;
         } catch (_) { /* 다음 설치본 */ }
       }
     }
@@ -156,6 +199,10 @@ function buildRequest(argv, deps = {}) {
         // 🔴 값 없이 플래그만 오면 멈춘다 — 조용히 무시하면 「묶였다」고 믿는다
         if (!v || v.startsWith('--')) {
           if (a === '--object-none') return { ok: false, error: '--object-none 뒤에 이유가 없습니다(예: "회사 내부 일" · "이름표 없음: <이름>")' };
+          if (a === '--nature') {
+            if (argv.includes('--dry-run')) { flags[a] = ''; continue; }
+            return { ok: false, gate: true, error: ['--nature 뒤에 일의 성격이 없습니다 — 저장하지 않고 멈춥니다.', ...NATURE_GUIDE].join('\n') };
+          }
           return { ok: false, error: `${a} 뒤에 ${a.startsWith('--object') ? '값' : '경로'}이 없습니다` };
         }
         flags[a] = v; i++;
@@ -206,7 +253,8 @@ function buildRequest(argv, deps = {}) {
       const clean = (Array.isArray(arr) ? arr : [])
         .filter((w) => w && UUID_RE.test(String(w.turn_uuid || '')) && typeof w.reason_quote === 'string' && w.reason_quote.trim())
         .slice(0, 3)
-        .map((w) => ({ turn_uuid: String(w.turn_uuid).toLowerCase(), reason_quote: w.reason_quote.trim() }));
+        // source:"ai_proposal" — 「좋아요」로 승인한 AI 제안(서버가 직전 AI 답 사본으로 대조 → «AI 제안 → 사람 승인»). 그 외 값은 버린다.
+        .map((w) => ({ turn_uuid: String(w.turn_uuid).toLowerCase(), reason_quote: w.reason_quote.trim(), ...(w.source === 'ai_proposal' ? { source: 'ai_proposal' } : {}) }));
       if (clean.length) whys = clean;
     } catch (e) {
       whysWarning = `--whys-file 읽기 실패 — 「왜」 없이 저널만 보냅니다 (${e.message})`;
@@ -246,6 +294,24 @@ function buildRequest(argv, deps = {}) {
     if (!UUID_RE.test(flags['--scope'])) return { ok: false, error: `--scope 값이 관리번호(uuid) 형식이 아닙니다: ${flags['--scope']}` };
     scopeId = flags['--scope'].toLowerCase();
   }
+  // ── 일의 성격 (2026-10-17 · 판단OS #4929) — 모르는 값이면 멈춘다(exit 3). --dry-run 은 경고만 하고 키를 뺀다.
+  let workNature = null;
+  let natureWarning = '';
+  if (flags['--nature'] !== undefined) {
+    const v = String(flags['--nature']).trim().toLowerCase();
+    if (NATURE_KEYS.includes(v)) workNature = v;
+    else if (dryRun) natureWarning = `일의 성격 «${flags['--nature']}» 은 모르는 값입니다(${NATURE_KEYS.join('·')}) — 실제로 보내면 멈춥니다`;
+    else return { ok: false, gate: true, error: [`일의 성격 «${flags['--nature']}» 은 모르는 값입니다 — 저장하지 않고 멈춥니다.`, ...NATURE_GUIDE].join('\n') };
+  }
+  // ── 누구의 사업 (선택 · 2026-10-18 · 판단OS #4966) — 내 회사가 아닌 회사의 사업이면 그 회사 이름표를 보낸다.
+  // @AI:INTENT 서버가 «그 회사에도 소속(겸직)인가»를 확인한 뒤에만 그 회사 칸에 넣는다 — 아니면 저장하지 않고 403.
+  // @AI:CONSTRAINT 회사 번호(uuid)가 아니라 이름표만 보낸다 — 이름표 → 칸은 서버 한 곳(journal-nature BUSINESSES)이 정한다.
+  let workBusiness = null;
+  if (flags['--business'] !== undefined) {
+    const v = String(flags['--business']).trim().toLowerCase();
+    if (!BUSINESS_RE.test(v)) return { ok: false, error: `--business 값 «${flags['--business']}» 은 회사 이름표 모양이 아닙니다(영문 소문자 이름표 — 관리자가 알려준 값)` };
+    workBusiness = v;
+  }
   const sessionUuid = UUID_RE.test(String(sessionId || '')) ? String(sessionId).toLowerCase() : null;
 
   const projected = `${title}\n${text}`.trim();
@@ -257,6 +323,8 @@ function buildRequest(argv, deps = {}) {
   if (objectNoneReason) { obj.object_none = true; obj.object_none_reason = objectNoneReason; }
   if (projectId) obj.project_id = projectId;
   if (scopeId) obj.scope_id = scopeId;
+  if (workNature) obj.work_nature = workNature;
+  if (workBusiness) obj.work_business = workBusiness;
   if (sessionUuid) obj.session_uuid = sessionUuid;
   const payload = JSON.stringify(obj);
   return {
@@ -265,7 +333,7 @@ function buildRequest(argv, deps = {}) {
     willTruncate: projected.length > CONTENT_CAP,
     hoistedLength,
     whys, whysWarning,
-    objectId, objectAlias, objectNoneReason, projectId, scopeId, sessionUuid,
+    objectId, objectAlias, objectNoneReason, projectId, scopeId, workNature, natureWarning, workBusiness, sessionUuid,
     payload,
   };
 }
@@ -292,24 +360,33 @@ function main() {
   const noNotionArg = process.argv.includes('--no-notion');
   if (!r.ok) {
     if (r.usage) {
-      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] (--object <uuid> [--object-alias <name>] | --object-none "<이유>") [--project <uuid> [--scope <uuid>]] [--no-notion] [--dry-run]');
+      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] (--object <uuid> [--object-alias <name>] | --object-none "<이유>") [--project <uuid> [--scope <uuid>]] --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>] [--no-notion] [--dry-run]');
     } else {
       console.error(`journal-ingest: ${r.error}`);
     }
+    if (r.gate) process.exit(GATE_EXIT); // 일의 성격 값이 틀림 — 노션 회사도 멈춘다(관문과 같은 이유)
     // 노션 회사: 사용법 오류도 스킬을 막지 않는다(종전). 노션 없는 회사: 저장이 안 됐으니 실패로 끝낸다.
     process.exit(noNotionArg ? 1 : 0);
   }
 
   // 대상 관문 — 노션 회사 경로도 멈춘다(exit 3): 노션 사본은 남지만, 건너뛴 채 색인되면 서버가 대상을 낱말로 추측한다.
+  // 일의 성격 관문도 같은 자리 — 둘 다 빠졌으면 한 번에 둘 다 알려 한 번에 고치게 한다.
+  const stops = [];
   const gate = objectGateMessage(process.argv.slice(2));
   if (gate) {
-    if (objectGateActive()) {
-      console.error(gate.join('\n'));
-      process.exit(GATE_EXIT);
-    }
-    console.log('journal-ingest: ⚠️ 대상(--object 또는 --object-none "<이유>")이 없습니다 — 이번엔 그대로 보냅니다');
+    if (objectGateActive()) stops.push(gate.join('\n'));
+    else console.log('journal-ingest: ⚠️ 대상(--object 또는 --object-none "<이유>")이 없습니다 — 이번엔 그대로 보냅니다');
+  }
+  const ngate = natureGateMessage(process.argv.slice(2));
+  if (ngate && natureGateActive()) stops.push(ngate.join('\n'));
+  if (stops.length) {
+    console.error(stops.join('\n'));
+    process.exit(GATE_EXIT);
   }
   if (r.objectNoneReason) console.log(`journal-ingest: 대상 없음 — ${r.objectNoneReason}`);
+  if (r.workNature) console.log(`journal-ingest: 일의 성격 — ${r.workNature}`);
+  if (r.workBusiness) console.log(`journal-ingest: 누구의 사업 — ${r.workBusiness}`);
+  if (r.natureWarning) console.log(`journal-ingest: ⚠️ ${r.natureWarning}`);
 
   if (r.whysWarning) console.log(`journal-ingest: ⚠️ ${r.whysWarning}`);
   if (r.whys) console.log(`journal-ingest: 「왜」 ${r.whys.length}건 함께 보냄 — 서버가 대화 원장과 대조해 확인된 것만 판단 기록으로 남깁니다`);
@@ -339,7 +416,7 @@ function main() {
     failed = true;
     if (r.noNotion) {
       console.log(`journal-ingest: ❌ 저장되지 않았습니다 — ${msg}`);
-      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}${r.objectNoneReason ? ` --object-none ${JSON.stringify(r.objectNoneReason)}` : ''}${r.projectId ? ` --project ${r.projectId}` : ''}${r.scopeId ? ` --scope ${r.scopeId}` : ''}`);
+      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}${r.objectNoneReason ? ` --object-none ${JSON.stringify(r.objectNoneReason)}` : ''}${r.projectId ? ` --project ${r.projectId}` : ''}${r.scopeId ? ` --scope ${r.scopeId}` : ''}${r.workNature ? ` --nature ${r.workNature}` : ''}${r.workBusiness ? ` --business ${r.workBusiness}` : ''}`);
       process.exitCode = 1;
     } else {
       console.log(`journal-ingest: ⚠️ ${msg}${tail}`);
@@ -376,7 +453,8 @@ function main() {
       if (res.statusCode === 200) {
         let deduped = false;
         let ai = null;
-        try { const j = JSON.parse(s); deduped = !!j.deduped; ai = j.ai_proposal || null; } catch (_) {}
+        let refile = null;
+        try { const j = JSON.parse(s); deduped = !!j.deduped; ai = j.ai_proposal || null; refile = j.refile || null; } catch (_) {}
         if (r.noNotion) {
           console.log(deduped
             ? 'journal-ingest: ✅ 이미 같은 내용으로 저장돼 있습니다'
@@ -390,6 +468,23 @@ function main() {
         if (ai && ai.applied) {
           console.log(`journal-ingest: 핵심 결정 ${ai.checked}줄 — 원문 확인 ${ai.grounded} · [AI 제안] ${ai.marked_ai} · [원문 미확인] ${ai.marked_mismatch}`);
         }
+        // 칸 옮김 (2026-10-17 · 판단OS #4929) — 같은 회사 안에서 폴더·칸을 바꿔 다시 보냈을 때 «정말 옮겨졌나»의 유일한 증거
+        if (refile && refile.refiled > 0) {
+          console.log(`journal-ingest: 칸 옮김 ${refile.refiled}행 — 이 기록에 딸린 근거·초안·판단도 새 폴더로 함께 옮겼습니다`);
+        } else if (refile && refile.error) {
+          console.log(`journal-ingest: ⚠️ 칸 옮기기 실패 — ${refile.error} · 「옮겼다」고 말하지 마세요`);
+        }
+      } else if (res.statusCode === 422) {
+        // 일의 성격과 고른 폴더가 안 맞음 — 서버가 저장하지 않았다. 노션 회사도 멈춘다(넘어가면 고칠 기회를 잃는다).
+        let j = {};
+        try { j = JSON.parse(s) || {}; } catch (_) {}
+        console.error(`journal-ingest: 🔴 일의 성격과 고른 폴더가 맞지 않아 저장하지 않았습니다 — ${j.hint || j.error || '폴더를 다시 고르세요'}`);
+        console.error('   성격(--nature)이나 폴더(--project)를 고쳐 같은 명령으로 다시 보내세요.');
+        process.exitCode = GATE_EXIT;
+      } else if (res.statusCode === 403 && r.workBusiness) {
+        // 그 회사 소속(겸직)이 확인되지 않음 — 서버가 저장하지 않았다. 내 회사 칸으로 조용히 바꿔 넣지 않는다.
+        console.error(`journal-ingest: 🔴 «${r.workBusiness}» 회사에 소속이 확인되지 않아 저장하지 않았습니다 — 관리자에게 그 회사 배정을 요청하거나, 내 회사 일이면 --business 를 빼고 다시 보내세요.`);
+        process.exitCode = GATE_EXIT;
       } else if (r.noNotion) {
         fail(`서버 응답 ${res.statusCode} ${s.slice(0, 200)}`);
       } else {
@@ -403,5 +498,5 @@ function main() {
   req.end();
 }
 
-module.exports = { buildRequest, hoistPrioritySection, objectGateMessage, objectGateActive, CONTENT_CAP };
+module.exports = { buildRequest, hoistPrioritySection, objectGateMessage, objectGateActive, natureGateMessage, natureGateActive, NATURE_KEYS, CONTENT_CAP };
 if (require.main === module) main();

@@ -18,6 +18,8 @@
 //     --inset <투명PNG url> --inset-shape cut     (보조 인물: cut=누끼 / circle=원형 액자)
 //       --inset-x 76 --inset-y 46 --inset-h 400 --inset-outline 0 --inset-tone "sepia(.26)"
 //     --punch 1                                   (배경 채도·대비 보정 강도, 0=끔)
+//     🔴 --bg-source ai|self|<원본 주소>  (필수 · AI 면 --bg-people none|silhouette|faces · 실제 사진이면 --bg-license "CC BY 4.0" --bg-credit "<화면 표기>")
+//        --inset 을 쓰면 --inset-source 도 같은 규칙 · 얼굴이 보이는 AI 그림은 사람이 확인하고 --bg-face-ok "<이유>"
 // 출력: 마지막 줄 = 완성 썸네일 image_url
 //
 // 왜 이 스크립트인가: 텍스트를 GPT 이미지 안에 그리면 한글이 깨진다.
@@ -327,6 +329,67 @@ export function assembleHtml(opts) {
 }
 
 // ---- CLI (팀원 실행 경로: 백엔드 /mcp/ext/render-thumbnail로 HTTP 렌더) ----
+// @AI:INTENT 2026-10-11 — 렌더 답의 guidance(회사가 남긴 앞으로의 판단 · ext_render_html 것)를 화면 줄로.
+//   전엔 서버 문이 판단을 안 실어 30일 146장 동안 0번 보였다. 🔴 stderr 로만 — 마지막 stdout 줄 = image_url 계약.
+export function guidanceLines(body) {
+  const out = [];
+  const items = Array.isArray(body?.guidance) ? body.guidance : [];
+  for (const g of items) {
+    const text = String(g?.text || '').trim();
+    if (!text) continue;
+    out.push(`📌 ${g.scope === 'me' ? '내 판단' : '회사 판단'}: ${text}${g.why ? ` (이유: ${String(g.why).trim()})` : ''}`);
+  }
+  if (body?.guidance_more?.count) out.push(`📌 판단 ${body.guidance_more.count}개 더 — ${body.guidance_more.how || 'get_company_context 로 전부 받는다'}`);
+  const p = body?.guidance_proposal;
+  if (p?.text) out.push(`📌 ${p.from || '팀원'} 제안(아직 판단 아님): ${String(p.text).trim()} — ${p.how || '사람에게 한 번만 묻는다'}`);
+  return out;
+}
+
+// ---- 이미지 출처 (2026-10-22) ----
+// @AI:INTENT 안경투가 9월 이미지 포털 사진으로 유튜브 저작권 경고(한 번 더면 채널 삭제 위험) → 사장님 10/22 「이미지 쓸 때 저작권 검사 — 썸네일에」.
+//   배경(--bg)·보조 그림(--inset)마다 어디서 왔는지 적어야 렌더한다: --bg-source ai|self|<원본 주소> (+ --bg-people / --bg-license / --bg-credit)
+// @AI:CONSTRAINT 판정은 zulgap-pack 의 image-rights-check.js 한 벌을 부른다(통신사·포털 목록·라이선스·위키미디어 대조) — 여기 다시 짜지 않는다.
+//   그 검사기가 없는 PC(jedi-core 만 설치)는 «출처 칸 필수»까지만 본다.
+export function rightsRecords(o) {
+  const out = [];
+  for (const k of ['bg', 'inset']) {
+    if (!o[k]) continue;
+    const src = String(o[`${k}-source`] || '').trim();
+    const rec = { file: o[k] };
+    if (src === 'ai') Object.assign(rec, { ai: true, people: o[`${k}-people`] });
+    else if (src === 'self') Object.assign(rec, { self: true, self_note: o[`${k}-note`] || '우리 촬영·제작' });
+    else if (/^https?:\/\//.test(src)) Object.assign(rec, { source_url: src, license: o[`${k}-license`], credit: o[`${k}-credit`] });
+    if (o[`${k}-face-ok`]) rec.face_ok = { why: o[`${k}-face-ok`] };
+    out.push({ rec, where: `--${k}`, missing: !src });
+  }
+  return out;
+}
+
+function findRightsChecker() {
+  const cands = [path.join(__dirname, '..', '..', '..', '..', 'zulgap-pack', 'skills', 'zulgap-youtube-edit', 'scripts', 'image-rights-check.js')];
+  try {   // 설치본(캐시) — 팩마다 폴더가 따로라 설치 기록으로 찾는다
+    const ip = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+    for (const [name, list] of Object.entries(ip.plugins || {})) {
+      if (!name.startsWith('zulgap-pack@')) continue;
+      for (const e of list || []) if (e.installPath) cands.push(path.join(e.installPath, 'skills', 'zulgap-youtube-edit', 'scripts', 'image-rights-check.js'));
+    }
+  } catch (_) { /* 설치 기록 없음 */ }
+  return cands.find((f) => fs.existsSync(f)) || null;
+}
+
+async function checkRights(o) {
+  const items = rightsRecords(o);
+  const miss = items.filter((i) => i.missing).map((i) => i.where);
+  if (miss.length) fail(`${miss.join(' · ')} 의 출처가 없습니다 — ${miss.map((w) => `${w}-source ai|self|<원본 주소>`).join(' · ')} (AI 면 --bg-people none|silhouette|faces · 실제 사진이면 --bg-license·--bg-credit)`);
+  const chk = findRightsChecker();
+  if (!chk) { console.error('⚠️ 저작권 검사기(zulgap-pack)가 없는 PC — 출처 칸만 확인했습니다'); return; }
+  const { createRequire } = await import('node:module');
+  const R = createRequire(import.meta.url)(chk);
+  const { rows, bad } = await R.run(items.map(({ rec, where }) => ({ rec, where })), { verify: true });
+  for (const r of rows) console.error(`${r.mark} ${r.file} — ${r.msg}`);
+  if (bad) fail('저작권을 확인 못 한 그림이 있어 렌더하지 않았습니다(위 ❌ 줄)');
+}
+
 function parseArgs(argv) {
   const o = { quotes: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -342,6 +405,7 @@ async function main() {
   if (!o.bg) fail('--bg <배경 image_url> 필수 (ext_generate_image로 먼저 배경 생성)');
   if (!o.title) fail('--title "확정 메인카피" 필수');
   o.layout = (o.layout || 'A').toUpperCase();
+  await checkRights(o);   // 렌더(돈·시간) 전에 — 출처 모르는 배경·보조 그림이면 멈춘다
 
   let assembled;
   try { assembled = assembleHtml(o); } catch (e) { fail(e.message); }
@@ -368,6 +432,7 @@ async function main() {
   if (!res.ok || !body?.success || !body?.data?.image_url) fail(`렌더 실패 (HTTP ${res.status}): ${body?.error || '알 수 없음'}`);
 
   console.error(`✅ 썸네일 완성 — 레이아웃 ${o.layout}, ${assembled.width}×${assembled.height}`);
+  for (const line of guidanceLines(body)) console.error(line);
   console.log(body.data.image_url);
 }
 

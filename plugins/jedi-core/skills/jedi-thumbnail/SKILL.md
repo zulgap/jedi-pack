@@ -15,7 +15,7 @@ requires:
   jedi_tools: [ext_generate_image]
   endpoints: ["/mcp/ext/render-thumbnail"]
   config: []
-version: 2.4.0
+version: 2.5.0
 origin: teampack
 ---
 
@@ -509,6 +509,7 @@ curl -s "https://commons.wikimedia.org/w/api.php?action=query&titles=File:<파�
 node <이 스킬 폴더>/scripts/compose-thumbnail.mjs \
   --layout A \                    # A(하단2줄·기본) / B(좌텍스트·우인물) / C(쇼츠9:16)
   --bg "<배경 image_url>" \
+  --bg-source ai --bg-people none \   # 🔴 필수 — 배경 출처: ai(+people none|silhouette|faces) / self / <원본 주소>(+ --bg-license · --bg-credit) · 없으면 렌더 안 함(10/22 저작권)
   --title "월 500 노처녀들이|**상향혼**에 빠지는 과정" \   # | = 줄바꿈, **강조** = 색
   --subtitle "확정 서브카피" \                            # 선택
   --acc yellow \                  # 이름 붙은 팔레트: yellow / red / pink (채널 위키의 compose: 줄)
@@ -554,6 +555,7 @@ node <이 스킬 폴더>/scripts/compose-thumbnail.mjs \
 - **레이아웃 자동선택**: STEP 2에서 정한 A/B/C를 `--layout`으로 넘김.
 - **강조색·테두리·외곽선·폰트**는 채널 위키의 `compose:` 줄을 그대로 따름(예: `--acc red --stroke 4px --font gothic` / 팔레트 밖 색이면 `--acc-color "#f11e8f" --frame-color "#f11e8f" --frame-width 9 --frame-inset 0`).
 - 스크립트 마지막 줄 출력 = **완성 썸네일 image_url**.
+- **`📌 회사 판단:` 줄이 나오면 (2026-10-11)** 회사가 남긴 앞으로의 판단이다(예: 「썸네일 완성본은 항상 3장 — 서로 다른 안」). 다음 장부터 따르고, 이미 만든 장이 어긋나면 그 판단대로 다시 만든다. 고객에게 보내는 글에 옮기지 않는다. `📌 … 제안(아직 판단 아님)` 줄은 그 줄의 안내대로 사람에게 한 번만 묻는다.
 - 🔴 **`--punch` 기본은 0(끔)이다.** 켜는 것을 기본으로 하면 지금까지의 썸네일이 전부 달라진다.
   실무에서 쓸 때는 `--punch 1`(채도 1.12 · 대비 1.05)까지만 — 넘기면 피부가 붉게 뜬다.
 - 사용자에게 전달: `✅ 썸네일 완성 (레이아웃 {A/B/C})\n{image_url}`

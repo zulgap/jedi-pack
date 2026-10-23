@@ -164,6 +164,52 @@ def set_cell_whole(xml, row, col, value, occurrence=0):
     return clear_lineseg(out, sp[3], sp[4])
 
 
+_OBJ_IN_CELL = re.compile(r'<hp:(pic|tbl|ole|container|equation)\b')
+
+
+def cell_objects(xml, row, col, occurrence=0):
+    """그 칸에 든 글자 아닌 것(그림·표 등)의 태그 이름 목록."""
+    _, _, _, a, b = _span_of(xml, row, col, occurrence)
+    return [m.group(1) for m in _OBJ_IN_CELL.finditer(xml[a:b])]
+
+
+def set_cell_lines(xml, row, col, value, occurrence=0):
+    """칸 내용을 줄마다 한 문단으로 통째로 바꾼다 (여러 줄 본문 칸).
+
+    줄 구분은 \\n (\\r\\n·\\r 도 같은 것으로 본다). 문단 머리(paraPr)와 글자 서식(charPr)은
+    그 칸에서 «글자가 든 첫 문단»의 것을 그대로 쓴다 — 양식 서식이 유지된다.
+    빈 줄은 빈 문단이 된다.
+
+    @AI:CONSTRAINT 그림·표가 든 칸은 거부한다. 도장은 「(서명)」 칸 «안»의 그림이라
+      그 칸을 통째로 바꾸면 날인이 사라진다(9/13 실측 — 사장님이 물어보셔서 발송 직전에 잡혔다).
+    """
+    objs = cell_objects(xml, row, col, occurrence)
+    if objs:
+        raise ValueError('(r%d,c%d) 칸에 %s 가 들어 있다 — 통째로 바꾸면 사라진다(도장 칸?)'
+                         % (row, col, '/'.join(sorted(set(objs)))))
+    _, _, _, a, b = _span_of(xml, row, col, occurrence)
+    seg = xml[a:b]
+    head = re.match(r'<hp:tc\b[^>]*><hp:subList\b[^>]*>', seg)
+    tail = seg.rfind('</hp:subList>')
+    if not head or tail < 0:
+        raise ValueError('(r%d,c%d): 칸 머리·끝을 못 찾았다' % (row, col))
+    paras = re.findall(r'<hp:p\b.*?</hp:p>', seg[head.end():tail], re.S)
+    if not paras:
+        raise ValueError('(r%d,c%d): 문단이 없다' % (row, col))
+    tpl = next((p for p in paras if re.search(r'<hp:t>[^<]', p)), paras[0])
+    p_open = re.match(r'<hp:p\b[^>]*>', tpl).group(0)
+    cp = re.search(r'<hp:run charPrIDRef="(\d+)"', tpl)
+    if not cp:
+        raise ValueError('(r%d,c%d): 글자 서식을 못 찾았다' % (row, col))
+    cp = cp.group(1)
+    lines = value.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    body = ''.join(
+        p_open + ('<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run>' % (cp, escape(ln)) if ln
+                  else '<hp:run charPrIDRef="%s"/>' % cp) + '<hp:linesegarray/></hp:p>'
+        for ln in lines)
+    return xml[:a] + seg[:head.end()] + body + seg[tail:] + xml[b:]
+
+
 def append_cell(xml, row, col, text, occurrence=0):
     """칸의 마지막 글자 뒤에 이어붙인다 (앞 조각들의 서식을 건드리지 않는다)."""
     _, _, _, a, b = _span_of(xml, row, col, occurrence)
@@ -418,6 +464,534 @@ def anchor_pic_in_cell(xml, row, col, pic_xml, char_pr='0', occurrence=-1):
 
 
 # ────────────────────────────────────────────────────────────
+# 문서 전체 훑기 — 글자 조각이 어느 글자묶음(run)·문단에 속하나
+# ────────────────────────────────────────────────────────────
+
+_TOK = re.compile(r'<hp:p\b[^>]*>|</hp:p>|<hp:run\b[^>]*?/>|<hp:run\b[^>]*>|</hp:run>'
+                  r'|<hp:t>(.*?)</hp:t>', re.S)
+
+
+def text_nodes(xml):
+    """[{start, end, inner, char_pr, para}] — 글자 조각(<hp:t>)마다 하나.
+
+    para    = (문단 시작, 문단 끝) — 그 조각을 «직접» 담은 가장 안쪽 문단
+    char_pr = 그 조각을 «직접» 담은 글자묶음의 서식 번호
+
+    🔴 「바로 앞의 <hp:run」 을 서식으로 읽지 말 것 — 표가 든 글자묶음은 안쪽에
+    다른 글자묶음을 품고 있어서, 표 뒤 글자가 표 안 서식으로 잘못 읽힌다.
+    그래서 여는 태그·닫는 태그를 쌓아가며 센다.
+    """
+    out, runs, paras, pend = [], [], [], {}
+    for m in _TOK.finditer(xml):
+        tag = m.group(0)
+        if tag.startswith('<hp:p ') or tag == '<hp:p>':
+            paras.append(m.start())
+        elif tag == '</hp:p>':
+            if paras:
+                pend[paras.pop()] = m.end()
+        elif tag.startswith('<hp:run'):
+            if not tag.endswith('/>'):
+                cp = re.search(r'charPrIDRef="(\d+)"', tag)
+                runs.append(cp.group(1) if cp else None)
+        elif tag == '</hp:run>':
+            if runs:
+                runs.pop()
+        else:
+            out.append({'start': m.start(), 'end': m.end(), 'inner': m.group(1),
+                        'char_pr': runs[-1] if runs else None,
+                        'para': paras[-1] if paras else None})
+    for n in out:
+        n['para'] = (n['para'], pend.get(n['para'], len(xml)))
+    return out
+
+
+def _own_lineseg(xml, para):
+    """그 문단 «자신»의 줄배치 구간 (안쪽 표 문단 것이 아니라).
+    문단 자식 순서가 「글자묶음들 → 줄배치」 라서 구간 안 마지막 것이 자기 것이다."""
+    a, b = para
+    i = xml.rfind('<hp:linesegarray>', a, b)
+    if i < 0:
+        return None
+    j = xml.find('</hp:linesegarray>', i, b)
+    return (i, j + len('</hp:linesegarray>')) if j >= 0 else None
+
+
+def _split_text(inner):
+    """조각 안쪽을 [글자, 태그, 글자 …] 로 나눈다 (<hp:tab/>·<hp:lineBreak/> 같은 자식이 섞인다)."""
+    return re.split(r'(<[^>]+>)', inner)
+
+
+def _apply(xml, edits):
+    """겹치지 않는 (시작, 끝, 새 글자) 들을 뒤에서부터 끼운다."""
+    for a, b, new in sorted(edits, key=lambda e: e[0], reverse=True):
+        xml = xml[:a] + new + xml[b:]
+    return xml
+
+
+def para_texts(xml):
+    """{문단 시작: 그 문단이 «직접» 가진 글자 (이스케이프된 그대로)} — 옛 글자 잔존 검사용.
+    한 글자가 서식 경계로 조각나 있어도 문단 단위로 이어 붙여 본다."""
+    out = {}
+    for n in text_nodes(xml):
+        plain = ''.join(x for x in _split_text(n['inner']) if not x.startswith('<'))
+        out[n['para'][0]] = out.get(n['para'][0], '') + plain
+    return out
+
+
+def replace_map(xml, mapping):
+    """여러 글자를 한 번에 바꾸고 {찾을글자: 바뀐 건수} 를 돌려준다.
+
+    replace_text 와 다른 점 셋:
+      · 바뀐 문단의 줄배치를 **그 자리에서** 비운다(함정 ① — 긴 값이 한 줄로 넘친다)
+      · `&` `<` 가 든 찾을 글자도 맞는다(파일 안 글자는 이스케이프돼 있다)
+      · 태그 사이 글자만 본다 — <hp:tab/> 같은 자식 태그 속성은 안 건드린다
+
+    🔴 긴 것부터 바꾼다 — 짧은 키가 먼저 바뀌면 그것을 품은 긴 키가 0건이 된다.
+    🔴 한컴 「모두 바꾸기(AllReplace)」 를 쓰지 말 것 — 바꾼 자리의 글자 서식(빨간 날짜 등)이 사라진다.
+    """
+    keys = sorted(mapping, key=len, reverse=True)
+    counts = {k: 0 for k in keys}
+    edits, touched = [], set()
+    for n in text_nodes(xml):
+        parts = _split_text(n['inner'])
+        changed = False
+        for i, piece in enumerate(parts):
+            if piece.startswith('<'):
+                continue
+            for k in keys:
+                ek = escape(k)
+                c = piece.count(ek)
+                if c:
+                    counts[k] += c
+                    piece = piece.replace(ek, escape(mapping[k]))
+                    changed = True
+            parts[i] = piece
+        if changed:
+            edits.append((n['start'], n['end'], '<hp:t>%s</hp:t>' % ''.join(parts)))
+            touched.add(n['para'])
+    for para in touched:
+        ls = _own_lineseg(xml, para)
+        if ls:
+            edits.append((ls[0], ls[1], '<hp:linesegarray/>'))
+    return _apply(xml, edits), counts
+
+
+# 날짜 한 개 — 2026.08.05 · 2026. 08. 05. · 2026년 10월 21일 · 2026 년 10 월 21 일 · 2026.  10  .  22  .
+_D = r'20\d{2}\s*(?:\.|년)\s*\d{1,2}\s*(?:\.|월)\s*\d{1,2}(?:\s*(?:\.|일)(?!\d))?'
+# 기간까지 한 덩어리로 — 「~2026.08.05」 · 「… ~ 2026.10.20」 · 「…~09.29」 · 「…~20」
+DATE_RE = (r'(?:~\s*)?' + _D +
+           r'(?:\s*~\s*(?:' + _D +
+           r'|\d{1,2}\s*(?:\.|월)\s*\d{1,2}(?:\s*(?:\.|일)(?!\d))?|\d{1,2}(?!\d)))?')
+
+
+def char_color(header_xml, cid):
+    m = re.search(r'<hh:charPr id="%s"[^>]*?textColor="([^"]+)"' % re.escape(str(cid)),
+                  header_xml)
+    return m.group(1).upper() if m else None
+
+
+def clone_char_pr(header_xml, base_id, color):
+    """서식 base_id 를 그대로 복제하되 글자색만 color 로 바꾼 새 서식을 만든다.
+    (새 header, 새 번호) 를 돌려준다.
+
+    🔴 「그 양식에 있는 아무 빨간 서식」 을 쓰지 말 것 — 크기·글꼴·자간이 달라 그 날짜만
+    커지거나 줄이 밀린다. 바로 그 글자의 서식을 복제해 색만 바꾼다.
+    """
+    m = re.search(r'<hh:charPr id="%s"[^>]*>.*?</hh:charPr>' % re.escape(str(base_id)),
+                  header_xml, re.S)
+    if not m:
+        raise KeyError('header 에 charPr %s 가 없다' % base_id)
+    new_id = max(int(x) for x in re.findall(r'<hh:charPr id="(\d+)"', header_xml)) + 1
+    node = re.sub(r'^<hh:charPr id="\d+"', '<hh:charPr id="%d"' % new_id, m.group(0))
+    node = re.sub(r'textColor="[^"]*"', 'textColor="%s"' % color, node, count=1)
+    end = header_xml.find('</hh:charProperties>')
+    if end < 0:
+        raise ValueError('header 에 charProperties 가 없다')
+    header_xml = header_xml[:end] + node + header_xml[end:]
+    header_xml = re.sub(r'(<hh:charProperties itemCnt=")(\d+)(")',
+                        lambda mm: '%s%d%s' % (mm.group(1), int(mm.group(2)) + 1, mm.group(3)),
+                        header_xml, count=1)
+    return header_xml, str(new_id)
+
+
+def color_matches(xml, header_xml, pattern, color='#DC0000', clone_cache=None):
+    """pattern(정규식)에 맞는 글자만 떼어 color 로 칠한다.
+    (xml, header, 칠한 글자 목록, 이미 그 색이던 글자 목록) 을 돌려준다.
+
+    글자묶음을 「앞 / 맞은 글자 / 뒤」 로 나눈다 — 앞뒤는 원래 서식 그대로다.
+    글자가 그대로라 줄배치는 비우지 않는다.
+    여러 구역(section)을 칠할 때는 clone_cache 를 넘겨 같은 서식을 두 번 복제하지 않게 한다.
+
+    🔴 한컴 「찾기」 를 되풀이하는 방식은 쓰지 말 것 — 같은 자리를 다시 찾으며 멈췄다(10/22 실측).
+    """
+    color = color.upper()
+    clone_cache = {} if clone_cache is None else clone_cache
+    rx = re.compile(pattern)
+    hit, already, edits = [], [], []
+    for n in text_nodes(xml):
+        base = n['char_pr']
+        parts = _split_text(n['inner'])
+        texts = [p for p in parts if not p.startswith('<')]
+        if base is None or not any(rx.search(p) for p in texts):
+            continue
+        if char_color(header_xml, base) == color:
+            already += [m.group(0) for p in texts for m in rx.finditer(p)]
+            continue
+        if base not in clone_cache:
+            header_xml, clone_cache[base] = clone_char_pr(header_xml, base, color)
+        red = clone_cache[base]
+        out, buf = [], ''
+        for p in parts:
+            if p.startswith('<'):
+                buf += p
+                continue
+            pos = 0
+            for m in rx.finditer(p):
+                if not m.group(0).strip():
+                    continue
+                buf += p[pos:m.start()]
+                out.append('<hp:t>%s</hp:t></hp:run><hp:run charPrIDRef="%s"><hp:t>%s</hp:t>'
+                           '</hp:run><hp:run charPrIDRef="%s">' % (buf, red, m.group(0), base))
+                hit.append(m.group(0))
+                buf = ''
+                pos = m.end()
+            buf += p[pos:]
+        out.append('<hp:t>%s</hp:t>' % buf)
+        edits.append((n['start'], n['end'], ''.join(out)))
+    return _apply(xml, edits), header_xml, hit, already
+
+
+# ────────────────────────────────────────────────────────────
+# 그림 · 도장 · 표 나누기 — 공통 재료
+# ────────────────────────────────────────────────────────────
+
+def para_spans(xml):
+    """[(시작, 끝)] — 문서의 모든 문단(안쪽 표 문단 포함)."""
+    out, st = [], []
+    for m in re.finditer(r'<hp:p\b[^>]*>|</hp:p>', xml):
+        if m.group(0) == '</hp:p>':
+            if st:
+                out.append((st.pop(), m.end()))
+        else:
+            st.append(m.start())
+    return out
+
+
+def para_of(spans, pos):
+    """pos 를 «직접» 담은 가장 안쪽 문단."""
+    best = None
+    for a, b in spans:
+        if a <= pos < b and (best is None or a > best[0]):
+            best = (a, b)
+    return best
+
+
+def pic_nodes(xml):
+    """[{start, end, name, para}] — 그림(<hp:pic>) 하나마다."""
+    spans = para_spans(xml)
+    out = []
+    for m in re.finditer(r'<hp:pic\b.*?</hp:pic>', xml, re.S):
+        nm = re.search(r'원본 그림의 이름: ([^<]*)</hp:shapeComment>', m.group(0))
+        out.append({'start': m.start(), 'end': m.end(),
+                    'name': nm.group(1).strip() if nm else '',
+                    'para': para_of(spans, m.start())})
+    return out
+
+
+def find_text(xml, text):
+    """text 가 든 글자 조각들 [(node, 조각 안 위치)] — 문서 순서."""
+    et = escape(text)
+    out = []
+    for n in text_nodes(xml):
+        i = n['inner'].find(et)
+        while i >= 0:
+            out.append((n, i))
+            i = n['inner'].find(et, i + 1)
+    return out
+
+
+def image_size(path):
+    """(가로 px, 세로 px) — PNG/JPEG 머리만 읽는다(Pillow 없이)."""
+    import struct
+    with open(path, 'rb') as f:
+        head = f.read(26)
+        if head[:8] == b'\x89PNG\r\n\x1a\n':
+            return struct.unpack('>II', head[16:24])
+        if head[:2] != b'\xff\xd8':
+            raise ValueError('PNG/JPEG 만 됩니다: %s' % path)
+        f.seek(2)
+        while True:
+            b = f.read(1)
+            while b and b != b'\xff':
+                b = f.read(1)
+            while b == b'\xff':
+                b = f.read(1)
+            if not b:
+                raise ValueError('JPEG 크기를 못 읽었다: %s' % path)
+            mk = b[0]
+            ln = struct.unpack('>H', f.read(2))[0]
+            if mk in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                f.read(1)
+                h, w = struct.unpack('>HH', f.read(4))
+                return w, h
+            f.seek(ln - 2, 1)
+
+
+def next_ids(hpf, *xmls):
+    """새 그림·표에 쓸 번호들 — {image: 다음 image 번호, z: 다음 zOrder, obj: 다음 개체 id}."""
+    imgs = [int(x) for x in re.findall(r'id="image(\d+)"', hpf)]
+    zs, objs = [0], [0]
+    for x in xmls:
+        zs += [int(v) for v in re.findall(r'zOrder="(\d+)"', x)]
+        objs += [int(v) for v in re.findall(r'<hp:(?:tbl|pic)\b[^>]*?\bid="(\d+)"', x)]
+    return {'image': max(imgs + [0]) + 1, 'z': max(zs) + 1, 'obj': max(objs + [1900000000]) + 1}
+
+
+def add_image(hpf, n, path):
+    """그림 파일 하나를 패키지에 등록한다. (hpf, image id, zip 안 경로)."""
+    ext = os.path.splitext(path)[1].lower().lstrip('.')
+    ext = {'jpeg': 'jpg'}.get(ext, ext)
+    if ext not in ('jpg', 'png', 'bmp', 'gif'):
+        raise ValueError('그림은 jpg/png/bmp/gif: %s' % path)
+    iid = 'image%d' % n
+    arc = 'BinData/%s.%s' % (iid, ext)
+    return register_image(hpf, iid, arc, 'image/%s' % ext), iid, arc
+
+
+def cell_box(xml, row, col, occurrence=0):
+    """칸의 (폭, 높이, 안쪽 여백 좌, 우) — HWPUNIT."""
+    _, _, _, a, b = _span_of(xml, row, col, occurrence)
+    tail = xml[b:xml.find('</hp:tc>', b)]
+    sz = re.search(r'<hp:cellSz width="(\d+)" height="(\d+)"', tail)
+    mg = re.search(r'<hp:cellMargin left="(\d+)" right="(\d+)"', tail)
+    if not sz:
+        raise ValueError('(r%d,c%d) 칸 크기를 못 찾았다' % (row, col))
+    return (int(sz.group(1)), int(sz.group(2)),
+            int(mg.group(1)) if mg else 0, int(mg.group(2)) if mg else 0)
+
+
+def cell_formats(xml, row, col, occurrence=0):
+    """그 칸 첫 문단의 (문단 서식, 글자 서식) 번호 — 새 문단을 그 칸 모양 그대로 만들 때."""
+    _, _, _, a, b = _span_of(xml, row, col, occurrence)
+    seg = xml[a:b]
+    pp = re.search(r'<hp:p\b[^>]*paraPrIDRef="(\d+)"', seg)
+    cp = re.search(r'<hp:run charPrIDRef="(\d+)"', seg)
+    return (pp.group(1) if pp else '0'), (cp.group(1) if cp else '0')
+
+
+# ────────────────────────────────────────────────────────────
+# 표 나누기
+# ────────────────────────────────────────────────────────────
+
+def tables(xml):
+    """[(시작, 끝)] — 모든 표(안쪽 표 포함). 짝을 깊이로 맞춘다."""
+    out, st = [], []
+    for m in re.finditer(r'<hp:tbl\b|</hp:tbl>', xml):
+        if m.group(0) == '</hp:tbl>':
+            if st:
+                out.append((st.pop(), m.end()))
+        else:
+            st.append(m.start())
+    return sorted(out)
+
+
+def table_rows(tbl):
+    """표 하나의 «자기» 행들 [(시작, 끝)] — 칸 안 표의 행은 빼고."""
+    rows, depth, cur = [], 0, None
+    for m in re.finditer(r'<hp:tbl\b|</hp:tbl>|<hp:tr>|</hp:tr>', tbl):
+        t = m.group(0)
+        if t.startswith('<hp:tbl'):
+            depth += 1
+        elif t == '</hp:tbl>':
+            depth -= 1
+        elif depth == 1 and t == '<hp:tr>':
+            cur = m.start()
+        elif depth == 1 and t == '</hp:tr>':
+            rows.append((cur, m.end()))
+    return rows
+
+
+def _row_cells(row_xml):
+    """그 행의 «자기» 칸 (rowAddr, rowSpan, 높이) 들 — 칸 안 표는 건너뛴다."""
+    out, depth = [], 0
+    for m in re.finditer(r'<hp:tbl\b|</hp:tbl>|<hp:cellAddr colAddr="\d+" rowAddr="(\d+)"/>'
+                         r'<hp:cellSpan colSpan="\d+" rowSpan="(\d+)"/><hp:cellSz width="\d+" height="(\d+)"',
+                         row_xml):
+        t = m.group(0)
+        if t.startswith('<hp:tbl'):
+            depth += 1
+        elif t == '</hp:tbl>':
+            depth -= 1
+        elif depth == 0:
+            out.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    return out
+
+
+def _renumber_rows(row_xml, delta):
+    """행 안 «자기» 칸들의 rowAddr 를 delta 만큼 옮긴다."""
+    parts, depth, last = [], 0, 0
+    for m in re.finditer(r'<hp:tbl\b|</hp:tbl>|<hp:cellAddr colAddr="(\d+)" rowAddr="(\d+)"/>', row_xml):
+        t = m.group(0)
+        if t.startswith('<hp:tbl'):
+            depth += 1
+        elif t == '</hp:tbl>':
+            depth -= 1
+        elif depth == 0:
+            parts.append(row_xml[last:m.start()])
+            parts.append('<hp:cellAddr colAddr="%s" rowAddr="%d"/>' % (m.group(1), int(m.group(2)) + delta))
+            last = m.end()
+    parts.append(row_xml[last:])
+    return ''.join(parts)
+
+
+def split_table(xml, tbl_span, rows_per, header=1, page_break=False, start_id=None):
+    """표 하나를 rows_per 줄씩 여러 표로 나눈다(머리 header 줄은 표마다 되풀이).
+
+    🔴 쪽을 넘는 「글자처럼 취급」 표는 다음 쪽으로 못 넘어가 **아래가 잘린다**(10/22 실측).
+       `pageBreak="TABLE"` 전환은 1×1 표에서 **본문이 사라졌다** — 나누는 것이 정답이다.
+    🔴 세로로 합쳐진 칸(rowSpan)이 자르는 자리를 넘으면 멈춘다 — 잘라서 만들면 칸이 깨진다.
+
+    나눈 표는 원래 표를 담은 문단 «바로 뒤»에 새 문단으로 하나씩 붙는다.
+    """
+    a, b = tbl_span
+    tbl = xml[a:b]
+    rows = table_rows(tbl)
+    if len(rows) <= header + rows_per:
+        raise ValueError('행 %d개 — 나눌 필요가 없다(머리 %d + %d줄)' % (len(rows), header, rows_per))
+    cells = [_row_cells(tbl[r0:r1]) for r0, r1 in rows]
+    bounds = list(range(header, len(rows), rows_per))
+    for i, cs in enumerate(cells):
+        for addr, span, _h in cs:
+            last = addr + span - 1
+            for cut in bounds[1:] + ([header] if header else []):
+                if addr < cut <= last:
+                    raise ValueError('%d행 칸이 %d행까지 합쳐져 있어 %d행에서 자를 수 없다' % (addr, last, cut))
+    head_xml = ''.join(tbl[r0:r1] for r0, r1 in rows[:header])
+    head_h = sum(max(h for _, _, h in cs) for cs in cells[:header]) if header else 0
+    pre = tbl[:rows[0][0]]
+    post = tbl[rows[-1][1]:]
+    nid = start_id or 1900000000
+    pieces = []
+    for k, s in enumerate(bounds):
+        chunk = rows[s:s + rows_per]
+        body = ''.join(_renumber_rows(tbl[r0:r1], header - s) for r0, r1 in chunk)
+        h = head_h + sum(max(hh for _, _, hh in cells[s + j]) for j in range(len(chunk)))
+        t = pre
+        t = re.sub(r'rowCnt="\d+"', 'rowCnt="%d"' % (header + len(chunk)), t, count=1)
+        t = re.sub(r'(<hp:sz width="\d+" widthRelTo="\w+" height=")\d+', lambda m: m.group(1) + str(h), t, count=1)
+        if k:
+            t = re.sub(r'^<hp:tbl id="\d+"', '<hp:tbl id="%d"' % (nid + k), t, count=1)
+        pieces.append(t + head_xml + body + post)
+    # 원래 표 자리에 첫 조각, 나머지는 담은 문단 뒤에 새 문단으로
+    pspan = para_of(para_spans(xml), a)
+    if not pspan:
+        raise ValueError('표를 담은 문단을 못 찾았다')
+    pa, pb = pspan
+    popen = re.match(r'<hp:p\b[^>]*>', xml[pa:]).group(0)
+    run_open = xml[:a][xml[:a].rfind('<hp:run'):]
+    run_open = re.match(r'<hp:run\b[^>]*>', run_open).group(0)
+    extra = ''
+    for t in pieces[1:]:
+        po = re.sub(r'\bid="\d+"', 'id="0"', popen, count=1)
+        po = re.sub(r'pageBreak="\d"', 'pageBreak="%d"' % (1 if page_break else 0), po, count=1)
+        extra += '%s%s%s</hp:run><hp:linesegarray/></hp:p>' % (po, run_open, t)
+    out = xml[:a] + pieces[0] + xml[b:pb] + extra + xml[pb:]
+    ls = _own_lineseg(out, (pa, pb + len(pieces[0]) - (b - a)))
+    if ls:
+        out = out[:ls[0]] + '<hp:linesegarray/>' + out[ls[1]:]
+    return out, len(pieces)
+
+
+# ────────────────────────────────────────────────────────────
+# 그림 넣기 · 도장 · 그림 지우기
+# ────────────────────────────────────────────────────────────
+
+def pics_in_cell(xml, hpf, row, col, images, cols=1, captions=None, width=None,
+                 occurrence=0, ids=None):
+    """칸 하나를 그림 표들로 채운다 — cols 장씩 한 줄(1행 cols열 표), 줄마다 아래에 설명 한 줄.
+
+    images  : 로컬 그림 경로들 (원본 해상도 그대로 — 표 칸 크기가 표시 크기를 정한다, 함정 ⑩)
+    width   : 그림 한 장 폭(HWPUNIT). 없으면 칸 폭을 cols 로 나눈다
+    돌려줌  : (xml, hpf, {zip 안 경로: 로컬 경로}, 넣은 수)
+
+    🔴 칸 내용을 통째로 갈아끼운다 — 옛 그림을 먼저 걷어내므로 함정 ⑪(같은 ID 를 지움)이 안 난다.
+    🔴 표는 «글자처럼 취급»(흐르는 표)이다. 떠 있는 표로 만들면 칸 높이를 안 밀고 겹친다.
+    """
+    if not images:
+        raise ValueError('그림이 없다')
+    if captions and len(captions) != len(images):
+        raise ValueError('설명 %d개 ≠ 그림 %d개' % (len(captions), len(images)))
+    cw, _ch, ml, mr = cell_box(xml, row, col, occurrence)
+    para_pr, char_pr = cell_formats(xml, row, col, occurrence)
+    w = width or (cw - ml - mr - int(2 * MM)) // cols
+    if w <= 0:
+        raise ValueError('칸이 너무 좁다')
+    ids = ids or next_ids(hpf, xml)
+    adds, inner = {}, []
+    for k in range(0, len(images), cols):
+        items = []
+        for path in images[k:k + cols]:
+            iw, ih = image_size(path)
+            hpf, iid, arc = add_image(hpf, ids['image'], path)
+            ids['image'] += 1
+            adds[arc] = path
+            h = int(w * ih / iw)
+            items.append((pic_node(iid, w, h, w, h, 1, 'PARA', 'COLUMN', z=ids['z'],
+                                   name=os.path.basename(path)), w, h))
+            ids['z'] += 1
+        tbl = pic_table(items, ids['obj'], z=ids['z'], char_pr=char_pr, para_pr=para_pr)
+        ids['obj'] += 1
+        ids['z'] += 1
+        inner.append('<hp:p id="0" paraPrIDRef="%s" styleIDRef="0" pageBreak="0" columnBreak="0" '
+                     'merged="0"><hp:run charPrIDRef="%s">%s</hp:run><hp:linesegarray/></hp:p>'
+                     % (para_pr, char_pr, tbl))
+        if captions:
+            inner.append(make_para('    /    '.join(captions[k:k + cols]), para_pr, char_pr))
+    xml = set_cell_content(xml, row, col, ''.join(inner), occurrence)
+    return xml, hpf, adds, len(images)
+
+
+def stamp_node(iid, size, x, y, z, name):
+    """도장 — 글 앞에 떠 있는 그림(글을 밀지 않는다). x·y = 종이 왼쪽 위 기준 HWPUNIT."""
+    node = pic_node(iid, size, size, size, size, 0, 'PAPER', 'PAPER',
+                    vert_off=y, horz_off=x, z=z, name=name)
+    return node.replace('textWrap="TOP_AND_BOTTOM"', 'textWrap="IN_FRONT_OF_TEXT"', 1)
+
+
+def insert_after_text(xml, node, offset, text, inline_xml):
+    """글자 조각 node 안 offset 위치의 text 바로 뒤에 inline_xml(그림 등)을 끼운다.
+
+    🔴 그 «문단의 글자묶음 뒤»에 직접 붙인다 — 문서 마지막 문단에 매달면 빈 쪽이 생기고(함정 ⑦),
+       칸 끝에 매달면 다음 쪽으로 밀린다. 글자묶음을 「…(인)」 / 그림 / 「뒤 글자」 로 나눈다.
+    """
+    cut = offset + len(escape(text))
+    inner = node['inner']
+    base = node['char_pr'] or '0'
+    new = ('<hp:t>%s</hp:t></hp:run><hp:run charPrIDRef="%s">%s</hp:run>'
+           '<hp:run charPrIDRef="%s"><hp:t>%s</hp:t>' % (inner[:cut], base, inline_xml, base, inner[cut:]))
+    return xml[:node['start']] + new + xml[node['end']:]
+
+
+def delete_pics(xml, near, name=None):
+    """near 글자가 든 문단의 그림을 지운다(name 을 주면 그 이름만). (xml, 지운 이름들).
+
+    🔴 «몇 번째 그림»으로 지우지 말 것 — 문서 안 그림 순서는 보이는 순서와 다르다
+       (10/22 실측: 순서로 짚어 지웠더니 엉뚱한 도장이 지워졌다).
+    """
+    paras = {n['para'] for n, _ in find_text(xml, near)}
+    if not paras:
+        raise LookupError('그 글자가 없다: %r' % near)
+    gone, edits = [], []
+    for p in pic_nodes(xml):
+        if p['para'] in paras and (name is None or p['name'] == name):
+            gone.append(p['name'])
+            edits.append((p['start'], p['end'], ''))
+    xml = _apply(xml, edits)
+    xml = re.sub(r'<hp:run charPrIDRef="(\d+)"></hp:run>', r'<hp:run charPrIDRef="\1"/>', xml)
+    return xml, gone
+
+
+# ────────────────────────────────────────────────────────────
 # 여백 · 저장
 # ────────────────────────────────────────────────────────────
 
@@ -434,6 +1008,28 @@ def set_margin(xml, which, mm_value):
     return re.sub(r'(<hp:margin[^>]*?)%s="\d+"' % which,
                   lambda m: '%s%s="%d"' % (m.group(1), which, round(mm_value * MM)),
                   xml, count=1)
+
+
+MARGIN_KEYS = ('top', 'bottom', 'left', 'right', 'header', 'footer')
+
+
+def set_margins(xml, **mm):
+    """여백 여러 변을 mm **명시값**으로 지정한다. 모르는 변 이름이면 멈춘다.
+
+    🔴 한컴 PageSetup 으로 고치지 말 것 — 값이 «현재값 기준»으로 읽히는 자리가 있어
+    준 값과 다른 여백이 됐다(상대값 함정). XML 에 숫자를 직접 쓴다.
+    """
+    for k, v in mm.items():
+        if k not in MARGIN_KEYS:
+            raise KeyError('여백 이름은 %s 중 하나: %s' % ('/'.join(MARGIN_KEYS), k))
+        if v is None:
+            continue
+        if v < 0:
+            raise ValueError('여백은 0 이상: %s=%s' % (k, v))
+        if not re.search(r'<hp:margin[^>]*\b%s="\d+"' % k, xml):
+            raise ValueError('이 구역에 여백 정보(%s)가 없다' % k)
+        xml = set_margin(xml, k, v)
+    return xml
 
 
 def register_image(hpf, img_id, href, media='image/jpg'):

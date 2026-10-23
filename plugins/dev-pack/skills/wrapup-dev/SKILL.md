@@ -74,8 +74,11 @@ Without one the command **stops with exit code 3** and saves nothing (otherwise 
 4. Never pass both flags. The reason must not be empty.
 
 ```
-f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>" --object-none "판단OS 개발 일반"
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>" --object-none "판단OS 개발 일반" --nature dev
 ```
+- `--nature dev` is required too (2026-10-17): dev work is `dev`. Only if the session was really something else
+  (warehouse/forwarder partner work → `partner`, ordering/stock/import cost → `scm`, ad/detail page/copy/price → `brand`,
+  client agency work → `client`, anything else → `other`) use that value. Missing or unknown value → exit code 3.
 - Exit code 3 = the target step was skipped → add the flag and run again (this is the one failure you do **not** just relay).
 - In your report, add one line: `대상: <name tag>` or `대상: 없음 — <reason>`.
 - This is what makes the entry findable later (recall / context loaders).
@@ -96,6 +99,23 @@ PR: {open PR links}
 ```
 
 Rule: **"Blockers:" must never be omitted.** If there are none, write "None" explicitly.
+
+## Step 3.5 — Time outside Claude (hourly paid members only — 2026-10-18)
+
+Hourly pay counts **Claude runtime** automatically (your PC uploads it). Work done **outside Claude**
+(watching lectures, manual edits, reading docs, calls) is 0 minutes unless you report it here.
+
+1. **Ask the server first** — call `ingest_daily_report` with only `{"report_date": "<today YYYY-MM-DD, KST>", "fill_missing": true}`.
+   - `skipped: "probe_enrolled"` → you are on the hourly list → go to 2.
+   - `skipped: "not_enrolled"` (or the tool is missing / errors) → **skip this step silently.** Do not ask the question.
+2. Ask exactly one question:
+   > **Total time outside Claude today so far?** (minutes + what — e.g. "45, watched intro lectures 3–5". Say "0" if none.)
+3. Send it: `ingest_daily_report` with `{"report_date": "<today>", "fill_missing": true, "outside_minutes": <number>, "outside_what": "<what, one line>"}`.
+   - It **replaces** today's outside total (it does not add) — if you run this skill twice today, answer with the **day's total**, not just this session.
+   - Your Claude runtime and other fields are not touched.
+4. Add one line to the standup in Step 3: `Outside Claude: {N} min — {what}` (omit the line if 0).
+
+🔴 Never put an outside number you did not get from the user. 🔴 The amount of pay is not shown here — the monthly settlement is done by the finance owner.
 
 ## Step 4 — End-of-day checklist (remind, don't skip)
 
