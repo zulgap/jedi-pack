@@ -286,6 +286,8 @@ const HANDLERS = {
   tool(a, c) {
     // 🔴 shell 을 쓰지 않는다 — 윈도에서 shell 로 넘기면 `-c "import PIL"` 따옴표가 사라져 늘 «없음»이 된다(10/22 실측)
     if (a.binary) {
+      // 🔴 두 번째 울타리(서버 lintPlan 이 첫째) — 회사가 등록한 계획(save_setup_plan)도 여기로 온다. 실행 파일은 «이름»만, 확인 인자는 정해진 넷만
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(String(a.binary)) || (a.version_arg !== undefined && !['-version', '--version', '-v', '-V'].includes(a.version_arg))) return { state: 'failed', code: 'bad_args' };
       const r = c.run(a.binary, [a.version_arg || '-version'], { encoding: 'utf8', timeout: 20000 });
       return r.status === 0 ? { state: 'ok' } : { state: 'missing', code: 'binary_missing', note: a.binary };
     }
@@ -310,7 +312,8 @@ const HANDLERS = {
     const cs = path.join(dir, 'scripts', 'chrome-session.js');
     const run = (args) => { const r = c.run(process.execPath, [cs, ...args], { encoding: 'utf8', timeout: 90000 }); try { return JSON.parse(r.stdout); } catch { return { error: String(r.stderr || r.stdout || '').trim().slice(0, 160) }; } };
     let st = run(['status', prof]);
-    if (!st.error && !st.open && !c.check) { run(['open', prof, ...(a.url ? [a.url] : [])]); st = run(['status', prof]); }
+    const url = a.url && /^https:\/\/[^\s]{3,300}$/.test(String(a.url)) ? a.url : null;   // 두 번째 울타리 — https 만
+    if (!st.error && !st.open && !c.check) { run(['open', prof, ...(url ? [url] : [])]); st = run(['status', prof]); }
     if (st.error) return { state: 'failed', code: 'chrome_error', note: st.error };
     if (!st.open) return { state: c.check ? 'missing' : 'failed', code: 'chrome_not_open' };
     return st.logged_in ? { state: 'ok', code: 'logged_in' } : { state: 'human', code: 'login_needed' };
@@ -396,6 +399,8 @@ function selftest() {
       { id: 'f1', kind: 'tool', who: 'code', args: { binary: 'ffmpeg' } },
       { id: 'y1', kind: 'tool', who: 'code', args: { python_import: 'PIL', pip: 'pillow' } },
       { id: 'x1', kind: 'rm_rf', who: 'code', args: {} },
+      { id: 'b1', kind: 'tool', who: 'code', args: { binary: 'C:\\Windows\\System32\\cmd.exe' } },
+      { id: 'b2', kind: 'tool', who: 'code', args: { binary: 'ffmpeg', version_arg: '/c del' } },
       { id: 'evil', kind: 'copy_file', who: 'code', args: { from_slot: 'root', rel: 'a.md', to: '../../.ssh/a.md' } },
     ],
   };
@@ -408,6 +413,7 @@ function selftest() {
       ['표 칸 빈 것 이름으로', by.t1.state === 'missing' && by.t1.note === '예약 시각'],
       ['실행 파일 있음 · 파이썬 모듈 없음 = 설치 안내 · 셸 없이(argv)', by.f1.state === 'ok' && by.y1.code === 'python_module_missing' && by.y1.note === 'pip install pillow' && calls.some((x) => x[0] === 'python' && x[1] === '-c' && x[2] === 'import PIL')],
       ['모르는 단계 종류 = failed(조용히 안 넘김)', by.x1.state === 'failed' && by.x1.code === 'unknown_kind'],
+      ['🔴 실행 파일 경로·이상한 확인 인자 = 띄우지 않고 failed', by.b1.code === 'bad_args' && by.b2.code === 'bad_args' && !calls.some((x) => /cmd\.exe/i.test(x[0]) || x.includes('/c del'))],
       ['🔴 목적지가 밖이면 거부', by.evil.state === 'failed' && by.evil.code === 'bad_dest' && !fs.existsSync(path.join(home, '.ssh'))],
       ['상대경로 울타리', !isSafeRel('C:/x') && !isSafeRel('a/../b') && !isSafeRel('a:b') && !isSafeRel('/etc') && isSafeRel('channels/naver/b.md')],
       ['Git Bash 가 줄인 «\\이름» 되살리기', fixUnc('\\nas\\s', 'win32') === '\\\\nas\\s' && fixUnc('//nas/s', 'win32') === '//nas/s' && fixUnc('\\x', 'darwin') === '\\x'],
