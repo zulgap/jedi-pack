@@ -36,6 +36,35 @@ function fixUnc(p, platform = process.platform) {
   return platform === 'win32' && /^\\[^\\]/.test(s) ? `\\${s}` : s;
 }
 
+/**
+ * NAS 이름 바꿔 끼우기 — `\\이름\공유\…`(또는 `//이름/…`)의 «이름»이 별칭표에 있으면 그 주소로 바꾼 경로, 없으면 null.
+ * @AI:INTENT 서버 회사 값은 사무실 안 NAS 이름(예 \\nas\…)으로 적혀 있는데, 사무실 밖 PC 는 회사 망(Tailscale)으로
+ *   들어와도 그 이름이 안 풀리고 숫자 주소로만 닿는다(10/23 원격 직원 실측). 그 PC 에만 «이름 → 주소» 표를 둔다.
+ * @AI:CONSTRAINT 별칭표는 그 PC 의 ~/.claude/zulgap/nas-alias.json 에만 — 이 레포(공개 사본으로 나감)·서버 회사 값에 주소를 넣지 않는다.
+ */
+function swapUncHost(p, alias) {
+  const m = /^(\\\\|\/\/)([^\\/]+)([\\/].*)?$/.exec(String(p || ''));
+  if (!m || !alias) return null;
+  const to = alias[m[2].toLowerCase()];
+  return to ? `${m[1]}${to}${m[3] || ''}` : null;
+}
+
+/** 별칭표 읽기 — 키·값 모두 «이름 글자»만(경로 구분자·공백 거부). 깨졌으면 빈 표 */
+function readNasAlias(home = os.homedir()) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'zulgap', 'nas-alias.json'), 'utf8').replace(BOM_RE, ''));
+    const ok = (s) => typeof s === 'string' && /^[A-Za-z0-9._-]{1,253}$/.test(s);
+    return Object.fromEntries(Object.entries(raw || {}).filter(([k, v]) => ok(k) && ok(v)).map(([k, v]) => [k.toLowerCase(), v]));
+  } catch { return {}; }
+}
+
+/** 원래 경로가 열리면 그대로, 안 열리고 별칭 경로가 열리면 별칭 경로, 둘 다 안 열리면 원래 경로(오류는 원래 이름으로 보인다) */
+function reachable(p, alias, exists = fs.existsSync) {
+  if (!p || exists(p)) return p;
+  const alt = swapUncHost(p, alias);
+  return alt && exists(alt) ? alt : p;
+}
+
 /** 상대경로 울타리 — 절대경로·..·드라이브·ADS(:)·빈 값 거부 */
 function isSafeRel(rel) {
   const s = String(rel || '');
@@ -171,7 +200,9 @@ function findSkillHaving(rel, roots = skillRoots()) {
 function makeCtx(plan, opts = {}) {
   const home = opts.home || os.homedir();
   const zroot = path.join(home, '.claude', 'zulgap');
-  const slots = Object.fromEntries((plan.slots || []).map((s) => [s.key, s.value ? fixUnc(s.value) : null]));
+  const alias = opts.alias || readNasAlias(home);
+  const exists = opts.exists || fs.existsSync;
+  const slots = Object.fromEntries((plan.slots || []).map((s) => [s.key, s.value ? reachable(fixUnc(s.value), alias, exists) : null]));
   /** 목적지 — ~/.claude/zulgap/ 아래, 있는 부모까지 실제 경로로 재확인(junction 이 밖을 가리키면 거부) */
   const dest = (rel) => {
     if (!isSafeRel(rel)) return null;
@@ -380,6 +411,18 @@ function selftest() {
       ['🔴 목적지가 밖이면 거부', by.evil.state === 'failed' && by.evil.code === 'bad_dest' && !fs.existsSync(path.join(home, '.ssh'))],
       ['상대경로 울타리', !isSafeRel('C:/x') && !isSafeRel('a/../b') && !isSafeRel('a:b') && !isSafeRel('/etc') && isSafeRel('channels/naver/b.md')],
       ['Git Bash 가 줄인 «\\이름» 되살리기', fixUnc('\\nas\\s', 'win32') === '\\\\nas\\s' && fixUnc('//nas/s', 'win32') === '//nas/s' && fixUnc('\\x', 'darwin') === '\\x'],
+      ['사무실 밖 PC — NAS 이름 바꿔 끼우기(대소문자 무시 · 표에 없으면 null · 경로 아니면 null)', swapUncHost('\\\\NAS\\공유\\a', { nas: '10.0.0.5' }) === '\\\\10.0.0.5\\공유\\a' && swapUncHost('//nas/s', { nas: 'h' }) === '//h/s' && swapUncHost('\\\\other\\s', { nas: 'h' }) === null && swapUncHost('C:\\nas\\s', { nas: 'h' }) === null],
+      ['🔴 원래 이름이 열리면 별칭을 안 쓴다 · 안 열리고 별칭이 열리면 별칭 · 둘 다 안 열리면 원래 이름', (() => {
+        const al = { nas: '10.0.0.5' };
+        return reachable('\\\\nas\\s', al, () => true) === '\\\\nas\\s'
+          && reachable('\\\\nas\\s', al, (p) => p.startsWith('\\\\10.')) === '\\\\10.0.0.5\\s'
+          && reachable('\\\\nas\\s', al, () => false) === '\\\\nas\\s';
+      })()],
+      ['별칭표 — 경로 구분자·공백 든 값은 버린다 · 파일 없으면 빈 표', (() => {
+        const h = path.join(tmp, 'home-alias'); fs.mkdirSync(path.join(h, '.claude', 'zulgap'), { recursive: true });
+        fs.writeFileSync(path.join(h, '.claude', 'zulgap', 'nas-alias.json'), '\uFEFF' + JSON.stringify({ NAS: '10.0.0.5', bad: '..\\x', 'a b': '1.1.1.1' }));
+        const r = readNasAlias(h); return r.nas === '10.0.0.5' && Object.keys(r).length === 1 && Object.keys(readNasAlias(path.join(tmp, 'none'))).length === 0;
+      })()],
       ['끝 코드 — 남음 1 · 사람만 2 · 끝 0', exitCode([{ state: 'ok' }, { state: 'missing' }]) === 1 && exitCode([{ state: 'ok' }, { state: 'human' }]) === 2 && exitCode([{ state: 'ok' }, { state: 'skipped' }]) === 0],
     ];
     // 🔴 다시 돌려도 안 덮는다 — 사람이 고친 파일 보존
@@ -404,4 +447,4 @@ if (require.main === module) {
   Promise.resolve(main(process.argv.slice(2))).then((c) => { process.exitCode = c; }).catch((e) => { console.error('실패:', e.message); process.exitCode = 1; });
 }
 
-module.exports = { fixUnc, isSafeRel, isInside, readCell, readLine, rewriteLine, exitCode, readCreds, readDeviceIds, skillRoots, findSkillHaving, runPlan, HANDLERS, ENGINE_VERSION };
+module.exports = { fixUnc, swapUncHost, readNasAlias, reachable, isSafeRel, isInside, readCell, readLine, rewriteLine, exitCode, readCreds, readDeviceIds, skillRoots, findSkillHaving, runPlan, HANDLERS, ENGINE_VERSION };
