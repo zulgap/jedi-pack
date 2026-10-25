@@ -32,6 +32,7 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 const TIMEOUT_MS = 4000;
 const STALE_DAYS = 7;
@@ -59,18 +60,27 @@ function readCreds() {
 }
 
 // ── 캐시 ────────────────────────────────────────────────────────────────────
-function readCache() {
+// @AI:INTENT 열쇠 지문 — 캐시가 «어느 열쇠로 받은 카드인지» 적어 둔다 (2026-10-23 · 원격 PC 셋업 보고).
+//   열쇠를 다른 회사 것으로 바꾼 뒤 서버가 잠깐 안 받으면 옛 회사 카드(이름·노션 ID)가 그대로 나왔다.
+// @AI:CONSTRAINT 🔴 열쇠 원문은 캐시에 쓰지 않는다 — sha256 앞 12자만 (resolve-packs.js 와 같은 방식).
+function tokenFingerprint(tok) {
+  return tok ? crypto.createHash('sha256').update(String(tok)).digest('hex').slice(0, 12) : '';
+}
+
+function readCache(fp) {
   try {
     const c = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
     if (!c || !c.data || !c.fetched_at) return null;
+    // 지문이 다르거나 없으면(옛 캐시) 다른 열쇠의 답이다 — 쓰지 않는다.
+    if (!fp || c.tok !== fp) { warn('열쇠가 바뀌어 옛 캐시를 버립니다'); return null; }
     const ageDays = (Date.now() - new Date(c.fetched_at).getTime()) / 86400000;
     return { data: c.data, ageDays };
   } catch (_) { return null; }
 }
-function writeCache(data) {
+function writeCache(data, fp) {
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ fetched_at: new Date().toISOString(), data }, null, 2));
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ fetched_at: new Date().toISOString(), tok: fp, data }, null, 2));
   } catch (_) { /* 캐시 실패는 무해 — 다음 호출이 다시 서버로 */ }
 }
 
@@ -125,11 +135,12 @@ const answer = (data) => (isHas ? (isCard(data) ? (pick(data, key) ? 'yes' : 'no
   const creds = readCreds();
   if (!creds) { warn('제디 토큰 없음 — 사장님께 발급 요청'); out(NONE); }
 
+  const fp = tokenFingerprint(creds.token);
   const fresh = await fetchConfig(creds);
-  if (fresh) { writeCache(fresh); out(answer(fresh)); }
+  if (fresh) { writeCache(fresh, fp); out(answer(fresh)); }
 
-  // 서버 실패 → 직전 응답 캐시로 폴백 (다른 장부가 아니라 같은 소스의 사본)
-  const cached = readCache();
+  // 서버 실패 → 직전 응답 캐시로 폴백 (다른 장부가 아니라 같은 소스의 사본 · 같은 열쇠일 때만)
+  const cached = readCache(fp);
   if (!cached) { warn('캐시도 없음 — 값 없이 진행'); out(NONE); }
   if (cached.ageDays > STALE_DAYS) {
     // @AI:FRAGILE fail-loud — 조용히 옛 값을 쓰면 개명·퇴사가 반영 안 된 채 기록이 쌓인다
