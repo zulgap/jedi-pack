@@ -75,7 +75,7 @@ const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business', '--folder-ok']);
 // @AI:DEPENDS 서버 shared/journal-nature.js 의 성격 6개 — 서버가 받는 값과 같아야 한다(판단OS #4929)
 const NATURE_KEYS = ['dev', 'partner', 'scm', 'brand', 'client', 'other'];
 // 누구의 사업 이름표 — 모양만 본다. 어떤 이름표가 있는지는 서버 한 곳이 정한다(모르는 값이면 422 business_invalid 로 멈춘다).
@@ -325,6 +325,9 @@ function buildRequest(argv, deps = {}) {
   if (scopeId) obj.scope_id = scopeId;
   if (workNature) obj.work_nature = workNature;
   if (workBusiness) obj.work_business = workBusiness;
+  // 같은 고객 폴더 여럿 관문 (2026-10-26 · 판단OS #5313) — 폴더를 골랐으면 서버가 형제 폴더를 확인하게 한다.
+  // @AI:HUMAN_ONLY --folder-ok 는 사람이 카드에서 형제 폴더를 보고 「네」 한 뒤에만 붙인다.
+  if (projectId) { obj.folder_check = true; if (flags['--folder-ok']) obj.folder_confirmed = true; }
   if (sessionUuid) obj.session_uuid = sessionUuid;
   const payload = JSON.stringify(obj);
   return {
@@ -474,6 +477,17 @@ function main() {
         } else if (refile && refile.error) {
           console.log(`journal-ingest: ⚠️ 칸 옮기기 실패 — ${refile.error} · 「옮겼다」고 말하지 마세요`);
         }
+      } else if (res.statusCode === 422 && /"folder_has_siblings"/.test(s)) {
+        // 같은 고객의 폴더가 여럿 — 서버가 저장하지 않았다. 형제 폴더·관리 프로젝트·옮긴 이력을 그대로 보여 사람 확인을 받는다.
+        let j = {};
+        try { j = JSON.parse(s) || {}; } catch (_) {}
+        const fmt = (p) => `«${p.name}»${p.managed && p.managed.length ? ` (진행 중: ${p.managed.join(' · ')})` : ''}`;
+        console.error('journal-ingest: 🔴 같은 고객의 폴더가 여럿이라 저장하지 않았습니다 — 어느 폴더 일인지 확인받으세요');
+        if (j.chosen) console.error(`   고른 폴더: ${fmt(j.chosen)}`);
+        for (const sb of j.siblings || []) console.error(`   같은 고객의 다른 폴더: ${fmt(sb)}  → --project ${sb.project_id}`);
+        for (const m of j.moved_away || []) console.error(`   ⚠️ 지난번 이 폴더에 넣었다가 사람이 «${m.name}»로 옮긴 기록 ${m.count}건`);
+        console.error('   위 줄을 그대로 보여 드리고 「네」를 받은 뒤, 맞는 --project 에 --folder-ok 를 붙여 같은 명령으로 다시 보내세요.');
+        process.exitCode = GATE_EXIT;
       } else if (res.statusCode === 422) {
         // 일의 성격과 고른 폴더가 안 맞음 — 서버가 저장하지 않았다. 노션 회사도 멈춘다(넘어가면 고칠 기회를 잃는다).
         let j = {};

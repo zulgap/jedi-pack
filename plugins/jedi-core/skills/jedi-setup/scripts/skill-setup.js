@@ -22,7 +22,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
-const ENGINE_VERSION = 2;   // 2 = self_test 단계 · pip 판 조건(10/23)
+const ENGINE_VERSION = 3;   // 2 = self_test 단계 · pip 판 조건(10/23) · 3 = self_test 가 부품 위키로 실제 부품까지 본다(10/27)
 const DEFAULT_URL = 'https://judgmentos-unified-agent-production.up.railway.app';
 const MAX_COPY_BYTES = 1024 * 1024;
 const TEST_TIMEOUT_MS = 180000;   // 자체 시험 하나당(합성 영상 굽는 시험이 1분 안쪽)
@@ -150,6 +150,13 @@ function pickTests(names, match) {
  * @AI:DEPENDS 모양 = 판단OS 서버 쪽 파서와 같아야 한다 — 키·kind 이름을 바꾸려면 서버와 함께.
  */
 const FEEDBACK_KINDS = ['plan_gap', 'manual_step', 'ai_workaround', 'not_working'];
+/** 부품 확인(check_parts.py) 출력 → 실패한 부품 이름 한 줄. 서버가 남기는 글자(한글·영문·괄호·쉼표)만 — 판 번호·이유는 PC 화면에 */
+function partsFailNote(stdout) {
+  const names = String(stdout || '').split(/\r?\n/).filter((l) => l.startsWith('❌ ') && !l.startsWith('❌ 부품 ') && l.includes(' — '))   // 끝 요약 줄(「❌ 부품 N개 — …」)은 이름이 아니다
+    .map((l) => l.slice(2).split(' — ')[0].replace(/\s[\d][\w.]*$/, '').replace(/[^A-Za-z0-9가-힣._() -]/g, '').trim()).filter(Boolean);
+  return `부품 ${names.slice(0, 4).join(', ') || '확인 실패'}`.slice(0, 120);
+}
+
 function feedbackTag(input) {
   const i = input || {};
   const s = (v, max) => (typeof v === 'string' ? v.replace(/[\r\n]+/g, ' ').trim().slice(0, max) : '');
@@ -405,6 +412,17 @@ const HANDLERS = {
       const r = c.run(cmd, [path.join(sd, n)], { cwd: sd, encoding: 'utf8', timeout: TEST_TIMEOUT_MS, env });
       if (r.status !== 0) failed.push(n);
     }
+    // 🔴 부품 위키(10/27) — 그 스킬 scripts/ 가 쓰는 바깥 부품(코드의 import 에서 읽는다)을 판 상한 + 짧은 실제 확인으로 본다.
+    //   10/26 경훈 PC 는 위 시험이 다 통과했는데 OpenCV 5 · PyAV 19 · 그래픽카드 방식에서 멈췄다 — 계산 시험은 진짜 부품을 안 부른다
+    const parts = path.join(__dirname, '..', 'parts', 'check_parts.py');
+    if (fs.existsSync(parts)) {
+      if (py === undefined) py = ['python', 'python3', 'py'].find((p) => c.run(p, ['-c', 'import sys'], { encoding: 'utf8', timeout: 20000 }).status === 0) || null;
+      if (!py) failed.push('부품(파이썬 없음)');
+      else {
+        const r = c.run(py, [parts, dir], { cwd: dir, encoding: 'utf8', timeout: TEST_TIMEOUT_MS, env });
+        if (r.status !== 0) failed.push(partsFailNote(r.stdout));
+      }
+    }
     return failed.length ? { state: 'failed', code: 'tests_failed', note: failed.join(', ').slice(0, 200) } : { state: 'ok', code: 'tests_passed', note: `${tests.length}개 통과` };
   },
 
@@ -580,6 +598,8 @@ function selftest() {
       cases.push(['자체 시험 — 무늬로 고르면 그것만 · 전부 통과 = ok', by4.st2.state === 'ok' && by4.st2.code === 'tests_passed' && by4.st2.note === '2개 통과']);
       cases.push(['🔴 자체 시험 무늬 울타리(경로 불가) · 고른 시험 0개 = missing', by4.st3.code === 'bad_args' && by4.st4.state === 'missing' && by4.st4.code === 'no_tests']);
       cases.push(['자체 시험은 계획 순서와 무관하게 맨 끝 · 파이썬은 utf-8 모드', it4[0].id === 'f0' && ran.some((x) => /_test-ok\.py$/.test(x[1]) && x[2] === '1')]);
+      cases.push(['🔴 자체 시험이 부품 위키 확인도 돌린다(10/27) — 그 스킬 폴더를 넘긴다', ran.some((x) => /check_parts\.py$/.test(x[1] || '') && /fake-skill$/.test(x[2] || '') && x[3] === '1')]);
+      cases.push(['부품 실패 줄 → 이름만(판 번호·이유는 버림)', partsFailNote('✅ 그림 부품(Pillow) 12.1\n❌ 얼굴 찾기(OpenCV) 5.0.0.93 — 이 판은 확인 안 됨 → pip install "opencv-python<5"\n❌ 소리 파일 열기(PyAV) — 안 깔려 있습니다\n\n❌ 부품 2개 — 위 ❌ 줄의 할 일을 하고 다시\n') === '부품 얼굴 찾기(OpenCV), 소리 파일 열기(PyAV)' && partsFailNote('') === '부품 확인 실패']);
       cases.push(['pip 판 조건 모양 — 이름·조건만', PIP_SPEC_RE.test('pillow') && PIP_SPEC_RE.test('pillow<13') && PIP_SPEC_RE.test('pillow>=12,<13') && PIP_SPEC_RE.test('faster-whisper==1.1.0') && !PIP_SPEC_RE.test('pillow; rm -rf /') && !PIP_SPEC_RE.test('pillow <13') && !PIP_SPEC_RE.test('"pillow"')]);
       cases.push(['판 비교', versionOk('12.1.1', '<13') && !versionOk('13.0.0', '<13') && versionOk('12.3.0', '>=12,<13') && versionOk('12.1.1', '==12.*') && !versionOk('13.0', '==12.*') && versionOk('12.2', '~=12.1') && !versionOk('13.0', '~=12.1') && versionOk('x', '')]);
       // pip 판 조건 — 깔린 판이 조건 밖이면 missing + 설치 안내(따옴표) · 안이면 ok

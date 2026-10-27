@@ -1,0 +1,23 @@
+{
+  "_about": "부품 위키 — 팀팩 파이썬 도구가 쓰는 바깥 부품마다 한 장. 판 상한·확인법·안 되면 할 일·겪은 일. 도구가 무엇을 쓰는지는 check_parts.py 가 코드(import)에서 읽는다. 새 부품을 쓰기 시작하면 여기 한 장을 더한다 — 없으면 팀팩 검사가 막는다. 사람용 보기 = docs/parts-wiki.md (자동 생성)",
+  "parts": {
+    "PIL":            { "name": "그림 부품(Pillow)",        "pip": "pillow<14",              "dist": ["pillow"],                 "check": "pil",          "incidents": ["10/23 경훈 PC — 13판에서 글자 확인(getmask) 모양이 바뀌어 설명 그림이 멈춤 · 도구를 12·13 둘 다 돌게 고침(#639)"] },
+    "numpy":          { "name": "숫자 계산(numpy)",          "pip": "numpy<3",                "dist": ["numpy"],                  "check": "numpy" },
+    "cv2":            { "name": "얼굴 찾기(OpenCV)",         "pip": "opencv-python<5",        "dist": ["opencv-python", "opencv-contrib-python", "opencv-python-headless", "opencv-contrib-python-headless"], "check": "cv2", "incidents": ["10/26 경훈 PC — 5판에 CascadeClassifier 가 없어 썸네일 얼굴 후보 고르기가 멈춤"] },
+    "faster_whisper": { "name": "받아쓰기(faster-whisper)",  "pip": "faster-whisper<2",       "dist": ["faster-whisper"],         "check": "whisper", "with": ["ctranslate2", "av"], "incidents": ["10/26 경훈 PC GTX 1060 — float16 고정이라 그래픽카드 받아쓰기가 멈춤 · 카드가 되는 방식을 묻고 고르게 고침(#658)", "10/23 cublas64_12.dll 없음 — 그래픽카드 라이브러리 경로를 도구가 스스로 붙이게 함"] },
+    "ctranslate2":    { "name": "받아쓰기 엔진(ctranslate2)", "pip": "ctranslate2<5",          "dist": ["ctranslate2"],            "check": "gpu" },
+    "av":             { "name": "소리 파일 열기(PyAV)",      "pip": "av<19",                  "dist": ["av"],                     "check": "av",       "incidents": ["10/26 경훈 PC — 19판에서 받아쓰기 부품이 파일을 열 때 「metadata_errors」로 멈춰 티저가 멈춤 · 우리 도구는 ffmpeg 로 읽게 바꿈"] },
+    "fontTools":      { "name": "글꼴 읽기(fontTools)",      "pip": "fonttools<5",            "dist": ["fonttools"],              "check": "import" },
+    "imageio_ffmpeg": { "name": "영상 굽기 보조(imageio-ffmpeg)", "pip": "imageio-ffmpeg<1",  "dist": ["imageio-ffmpeg"],         "check": "imageio_ffmpeg" },
+    "playwright":     { "name": "브라우저 조종(playwright)", "pip": "playwright<2",           "dist": ["playwright"],             "check": "import" },
+    "pymatting":      { "name": "누끼 다듬기(pymatting)",    "pip": "pymatting<2",            "dist": ["pymatting"],              "check": "import" },
+    "rembg":          { "name": "누끼(rembg)",              "pip": "rembg<3",                "dist": ["rembg"],                  "check": "import",   "note": "누끼 모델(약 1GB)은 첫 실행 때 받는다 — 여기선 부품만 본다" },
+    "scipy":          { "name": "과학 계산(scipy)",          "pip": "scipy<2",                "dist": ["scipy"],                  "check": "import" },
+    "requests":       { "name": "인터넷 요청(requests)",     "pip": "requests<3",             "dist": ["requests"],               "check": "import" },
+    "fitz":           { "name": "PDF 읽기(PyMuPDF)",        "pip": "pymupdf<2",              "dist": ["pymupdf"],                "check": "fitz" },
+    "win32com":       { "name": "한글 프로그램 조종(pywin32)", "pip": "pywin32<400",          "dist": ["pywin32"],                "check": "import",   "windows": true },
+    "win32con":       { "same": "win32com" },
+    "win32gui":       { "same": "win32com" },
+    "win32process":   { "same": "win32com" }
+  }
+}
