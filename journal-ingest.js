@@ -6,12 +6,12 @@
 //
 // 사용:
 //   node journal-ingest.js "<notion_page_id 대시 UUID>" "<세션 제목>" "<한줄 요약>"          ← 노션 회사 (종전 그대로)
-//   node journal-ingest.js "<page_id>" "<제목>" "<한줄 요약>" --body-file <5섹션 본문.md>      ← 본문까지
+//   node journal-ingest.js "<page_id>" "<제목>" "<한줄 요약>" --body-file <5단락 본문.md>      ← 본문까지
 //   node journal-ingest.js new "<제목>" "<한줄 요약>" --body-file <본문.md> --no-notion          ← 노션 없는 회사
 //   … --whys-file <why.json>  「왜」 번호+구절(collect-prompts.js --why-pick 이 만든 파일 · 선택)
 //   … --object <객체 uuid> [--object-alias "<본문 속 이름>"]  이 저널의 대상 객체(선택 · 2026-10-06)
 //   … --object-none "<이유 한 줄>"  묶을 대상이 정말 없다고 사람이 정했다(2026-10-15 · 판단OS #4818)
-//   … --project <프로젝트 uuid> [--scope <관리번호 uuid>]  어느 프로젝트·관리번호 일인가(선택 · 2026-10-10)
+//   … --project <섹션 uuid> [--scope <관리번호 uuid>]  어느 섹션·관리번호 일인가(선택 · 2026-10-10)
 //   … --nature dev|partner|scm|brand|client|other  이 일의 성격(2026-10-17 · 판단OS #4929) — 브랜드 이름보다 먼저 정한다
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
 //
@@ -27,8 +27,8 @@
 // @AI:CONSTRAINT 🔴 `--nature` 가 없으면 보내지 않고 exit 3 (--dry-run 예외) — 사장님 「캠핑오너스이긴 하지만 개발인 경우도 있고
 //   파트너인 경우도 있고 SCM인 경우도 있고 이런 거 다 구분해야 됩니다」. 창고 알림 세션이 제목의 브랜드 이름만 보고 브랜드 칸에 들어갔다.
 //   값이 6개 중 하나가 아니면 관문이 꺼진 PC 에서도 멈춘다(새 문구를 쓰다 틀린 것이므로).
-// @AI:DEPENDS 판정은 서버 한 벌(unified-agent/shared/journal-nature.js) — 여기서 성격과 폴더가 맞는지 다시 판정하지 않는다.
-//   서버가 고른 프로젝트 종류와 안 맞으면 HTTP 422 {error, hint} → 저장 안 됨 · exit 3. 같은 회사 안에서 칸을 바꿔 다시 보내면
+// @AI:DEPENDS 판정은 서버 한 벌(unified-agent/shared/journal-nature.js) — 여기서 성격과 섹션이 맞는지 다시 판정하지 않는다.
+//   서버가 고른 섹션 종류와 안 맞으면 HTTP 422 {error, hint} → 저장 안 됨 · exit 3. 같은 회사 안에서 칸을 바꿔 다시 보내면
 //   응답 refile.refiled 에 함께 옮겨진 행 수가 온다 — 0 이거나 error 면 「옮겼다」고 말하지 않는다.
 // @AI:DEPENDS 대상 관문과 같은 이유로 «이 규칙을 아는 jedi-save/wrapup-dev 가 설치된 PC» 에서만 막는다(표식 '--nature').
 //
@@ -70,7 +70,7 @@ const crypto = require('crypto');
 // @AI:DEPENDS 서버 shared/journal-content.js CONTENT_CAP — 서버가 `title + "\n" + text` 를 이 길이에서
 //   조용히 자른다. 값이 갈리면 「안 잘렸다고 보고했는데 잘리는」 침묵이 생긴다.
 const CONTENT_CAP = 8000;
-// 「어디서 이어받나」를 담는 섹션. 5섹션의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
+// 「어디서 이어받나」를 담는 섹션. 5단락의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
@@ -83,11 +83,11 @@ const NATURE_KEYS = ['dev', 'partner', 'scm', 'brand', 'client', 'other'];
 const BUSINESS_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const NATURE_GUIDE = [
   '  브랜드 이름이 아니라 이 일이 «실제로 무엇이었나»로 고르세요:',
-  '    --nature dev      판단OS·고객 서비스 프로그램을 만들거나 고침 → 「… 개발」 폴더',
-  '    --nature partner  창고·포워딩·관세사와 주고받는 일 → 그 파트너 폴더',
-  '    --nature scm      발주·입고·재고·수입 원가 → 파트너·물류 폴더',
-  '    --nature brand    광고·상세페이지·카피·가격·리뷰 → 그 브랜드 폴더',
-  '    --nature client   고객사 대행·마케팅 → 그 고객 폴더',
+  '    --nature dev      판단OS·고객 서비스 프로그램을 만들거나 고침 → 「… 개발」 섹션',
+  '    --nature partner  창고·포워딩·관세사와 주고받는 일 → 그 파트너 섹션',
+  '    --nature scm      발주·입고·재고·수입 원가 → 파트너·물류 섹션',
+  '    --nature brand    광고·상세페이지·카피·가격·리뷰 → 그 브랜드 섹션',
+  '    --nature client   고객사 대행·마케팅 → 그 고객 섹션',
   '    --nature other    재무·영업·지원사업 등 그 밖',
 ];
 // @AI:DEPENDS 서버 server.js /mcp/ext/journal-ingest object_alias .slice(0, 40) — 넘으면 서버가 잘라 «본문에 없는 이름»이 된다
@@ -162,7 +162,7 @@ function skillGateActive(deps, marker, envKey) {
 }
 
 /**
- * 5섹션 본문을 «미해결·다음 먼저» 순서로 재배열한다. 결정론 — LLM 0.
+ * 5단락 본문을 «미해결·다음 먼저» 순서로 재배열한다. 결정론 — LLM 0.
  * 헤딩(`## `)이 없거나 해당 섹션이 없으면 원문 그대로.
  */
 function hoistPrioritySection(body) {
@@ -281,16 +281,16 @@ function buildRequest(argv, deps = {}) {
     objectNoneReason = String(flags['--object-none']).trim().slice(0, MAX_OBJECT_NONE_REASON);
     if (!objectNoneReason) return { ok: false, error: '--object-none 뒤에 이유가 없습니다(예: "회사 내부 일" · "이름표 없음: <이름>")' };
   }
-  // ── 프로젝트·관리번호 (선택 · 2026-10-10 판단OS #4613) — 서버가 «이 회사의 사용 중 프로젝트»·«그 프로젝트의 사용 중
+  // ── 섹션·관리번호 (선택 · 2026-10-10 판단OS #4613) — 서버가 «이 회사의 사용 중 섹션»·«그 섹션의 사용 중
   //   관리번호»인지 확인하고 붙인다(아니면 무시 — 관리번호는 빈칸). 여기서는 모양만 본다(fail-closed).
   let projectId = null;
   let scopeId = null;
   if (flags['--project']) {
-    if (!UUID_RE.test(flags['--project'])) return { ok: false, error: `--project 값이 프로젝트 번호(uuid) 형식이 아닙니다: ${flags['--project']}` };
+    if (!UUID_RE.test(flags['--project'])) return { ok: false, error: `--project 값이 섹션 번호(uuid) 형식이 아닙니다: ${flags['--project']}` };
     projectId = flags['--project'].toLowerCase();
   }
   if (flags['--scope']) {
-    if (!projectId) return { ok: false, error: '--scope 는 --project 와 함께만 씁니다(관리번호는 프로젝트 안의 칸)' };
+    if (!projectId) return { ok: false, error: '--scope 는 --project 와 함께만 씁니다(관리번호는 섹션 안의 칸)' };
     if (!UUID_RE.test(flags['--scope'])) return { ok: false, error: `--scope 값이 관리번호(uuid) 형식이 아닙니다: ${flags['--scope']}` };
     scopeId = flags['--scope'].toLowerCase();
   }
@@ -325,8 +325,8 @@ function buildRequest(argv, deps = {}) {
   if (scopeId) obj.scope_id = scopeId;
   if (workNature) obj.work_nature = workNature;
   if (workBusiness) obj.work_business = workBusiness;
-  // 같은 고객 폴더 여럿 관문 (2026-10-26 · 판단OS #5313) — 폴더를 골랐으면 서버가 형제 폴더를 확인하게 한다.
-  // @AI:HUMAN_ONLY --folder-ok 는 사람이 카드에서 형제 폴더를 보고 「네」 한 뒤에만 붙인다.
+  // 같은 고객 섹션 여럿 관문 (2026-10-26 · 판단OS #5313) — 섹션을 골랐으면 서버가 형제 섹션을 확인하게 한다.
+  // @AI:HUMAN_ONLY --folder-ok 는 사람이 카드에서 형제 섹션을 보고 「네」 한 뒤에만 붙인다.
   if (projectId) { obj.folder_check = true; if (flags['--folder-ok']) obj.folder_confirmed = true; }
   if (sessionUuid) obj.session_uuid = sessionUuid;
   const payload = JSON.stringify(obj);
@@ -471,29 +471,29 @@ function main() {
         if (ai && ai.applied) {
           console.log(`journal-ingest: 핵심 결정 ${ai.checked}줄 — 원문 확인 ${ai.grounded} · [AI 제안] ${ai.marked_ai} · [원문 미확인] ${ai.marked_mismatch}`);
         }
-        // 칸 옮김 (2026-10-17 · 판단OS #4929) — 같은 회사 안에서 폴더·칸을 바꿔 다시 보냈을 때 «정말 옮겨졌나»의 유일한 증거
+        // 칸 옮김 (2026-10-17 · 판단OS #4929) — 같은 회사 안에서 섹션·칸을 바꿔 다시 보냈을 때 «정말 옮겨졌나»의 유일한 증거
         if (refile && refile.refiled > 0) {
-          console.log(`journal-ingest: 칸 옮김 ${refile.refiled}행 — 이 기록에 딸린 근거·초안·판단도 새 폴더로 함께 옮겼습니다`);
+          console.log(`journal-ingest: 칸 옮김 ${refile.refiled}행 — 이 기록에 딸린 근거·초안·판단도 새 섹션으로 함께 옮겼습니다`);
         } else if (refile && refile.error) {
           console.log(`journal-ingest: ⚠️ 칸 옮기기 실패 — ${refile.error} · 「옮겼다」고 말하지 마세요`);
         }
       } else if (res.statusCode === 422 && /"folder_has_siblings"/.test(s)) {
-        // 같은 고객의 폴더가 여럿 — 서버가 저장하지 않았다. 형제 폴더·관리 프로젝트·옮긴 이력을 그대로 보여 사람 확인을 받는다.
+        // 같은 고객의 섹션이 여럿 — 서버가 저장하지 않았다. 형제 섹션·프로젝트·옮긴 이력을 그대로 보여 사람 확인을 받는다.
         let j = {};
         try { j = JSON.parse(s) || {}; } catch (_) {}
         const fmt = (p) => `«${p.name}»${p.managed && p.managed.length ? ` (진행 중: ${p.managed.join(' · ')})` : ''}`;
-        console.error('journal-ingest: 🔴 같은 고객의 폴더가 여럿이라 저장하지 않았습니다 — 어느 폴더 일인지 확인받으세요');
-        if (j.chosen) console.error(`   고른 폴더: ${fmt(j.chosen)}`);
-        for (const sb of j.siblings || []) console.error(`   같은 고객의 다른 폴더: ${fmt(sb)}  → --project ${sb.project_id}`);
-        for (const m of j.moved_away || []) console.error(`   ⚠️ 지난번 이 폴더에 넣었다가 사람이 «${m.name}»로 옮긴 기록 ${m.count}건`);
+        console.error('journal-ingest: 🔴 같은 고객의 섹션이 여럿이라 저장하지 않았습니다 — 어느 섹션 일인지 확인받으세요');
+        if (j.chosen) console.error(`   고른 섹션: ${fmt(j.chosen)}`);
+        for (const sb of j.siblings || []) console.error(`   같은 고객의 다른 섹션: ${fmt(sb)}  → --project ${sb.project_id}`);
+        for (const m of j.moved_away || []) console.error(`   ⚠️ 지난번 이 섹션에 넣었다가 사람이 «${m.name}»로 옮긴 기록 ${m.count}건`);
         console.error('   위 줄을 그대로 보여 드리고 「네」를 받은 뒤, 맞는 --project 에 --folder-ok 를 붙여 같은 명령으로 다시 보내세요.');
         process.exitCode = GATE_EXIT;
       } else if (res.statusCode === 422) {
-        // 일의 성격과 고른 폴더가 안 맞음 — 서버가 저장하지 않았다. 노션 회사도 멈춘다(넘어가면 고칠 기회를 잃는다).
+        // 일의 성격과 고른 섹션이 안 맞음 — 서버가 저장하지 않았다. 노션 회사도 멈춘다(넘어가면 고칠 기회를 잃는다).
         let j = {};
         try { j = JSON.parse(s) || {}; } catch (_) {}
-        console.error(`journal-ingest: 🔴 일의 성격과 고른 폴더가 맞지 않아 저장하지 않았습니다 — ${j.hint || j.error || '폴더를 다시 고르세요'}`);
-        console.error('   성격(--nature)이나 폴더(--project)를 고쳐 같은 명령으로 다시 보내세요.');
+        console.error(`journal-ingest: 🔴 일의 성격과 고른 섹션이 맞지 않아 저장하지 않았습니다 — ${j.hint || j.error || '섹션을 다시 고르세요'}`);
+        console.error('   성격(--nature)이나 섹션(--project)을 고쳐 같은 명령으로 다시 보내세요.');
         process.exitCode = GATE_EXIT;
       } else if (res.statusCode === 403 && r.workBusiness) {
         // 그 회사 소속(겸직)이 확인되지 않음 — 서버가 저장하지 않았다. 내 회사 칸으로 조용히 바꿔 넣지 않는다.

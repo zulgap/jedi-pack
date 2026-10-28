@@ -18,6 +18,7 @@
 //     --inset <투명PNG url> --inset-shape cut     (보조 인물: cut=누끼 / circle=원형 액자)
 //       --inset-x 76 --inset-y 46 --inset-h 400 --inset-outline 0 --inset-tone "sepia(.26)"
 //     --punch 1                                   (배경 채도·대비 보정 강도, 0=끔)
+//     --glow 1                                    (글자 뒤 음영 · 기본 켬 1 · 0=끔 · 최대 2 — 2026-10-28)
 //     🔴 --bg-source ai|self|<원본 주소>  (필수 · AI 면 --bg-people none|silhouette|faces · 실제 사진이면 --bg-license "CC BY 4.0" --bg-credit "<화면 표기>")
 //        --inset 을 쓰면 --inset-source 도 같은 규칙 · 얼굴이 보이는 AI 그림은 사람이 확인하고 --bg-face-ok "<이유>"
 // 출력: 마지막 줄 = 완성 썸네일 image_url
@@ -98,6 +99,31 @@ function buildQuotes(quoteArgs) {
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 const numOr = (v, d) => (v !== undefined && v !== '' && Number.isFinite(+v) ? +v : d);
+
+// 글자 뒤 음영 세기 — 0~2, 기본 1 (숫자가 아니면 기본)
+export function glowStrength(v) {
+  const n = numOr(v, 1);
+  return Math.min(2, Math.max(0, n));
+}
+
+// 제목·서브 뒤에 번진 검은 음영. 0 이면 빈 문자열(종전 모양 그대로).
+export function glowCss(g) {
+  if (!(g > 0)) return '';
+  const a = (x) => Math.min(1, x * g).toFixed(2);
+  const r = (x) => Math.round(x * (0.6 + 0.4 * g));
+  const halo = `0 0 ${r(24)}px rgba(0,0,0,${a(0.85)}),0 0 ${r(48)}px rgba(0,0,0,${a(0.7)}),0 0 ${r(90)}px rgba(0,0,0,${a(0.55)})`;
+  // @AI:INTENT 글자 그림자만으로는 밝은 배경에서 거의 안 보였다(10/28 실측 렌더) — 글자 덩어리 뒤에
+  //   번진 검은 판(::before + blur)을 함께 깐다. 채널 전용 합성기의 text_glow(글자 모양 팽창 후 흐림)와 같은 효과.
+  // @AI:FRAGILE isolation:isolate 를 빼면 z-index:-1 판이 배경 그림 뒤로 숨어 효과가 사라진다.
+  const panel = `content:'';position:absolute;inset:-26px -46px;border-radius:48px;`
+    + `background:rgba(0,0,0,${a(0.62)});filter:blur(${r(34)}px);z-index:-1;pointer-events:none`;
+  // @AI:CONSTRAINT 서브에는 판(::before)을 붙이지 않는다 — 서브 자동 맞춤이 scrollWidth 를 재서
+  //   판의 음수 inset 까지 «넘침»으로 읽고 글자를 줄였다(10/28 실측). 서브는 그림자를 겹쳐 진하게 한다.
+  return `<style>.title-box{isolation:isolate}`
+    + `.title-box::before{${panel}}`
+    + `.title{text-shadow:${halo},0 6px 22px rgba(0,0,0,.66) !important}`
+    + `.subtitle{text-shadow:${halo},${halo},0 4px 14px rgba(0,0,0,.75) !important}</style>`;
+}
 
 /**
  * 지목 세트 — 누끼/원형 인서트 + 화살표 + 손글씨(또는 명함) 라벨.
@@ -297,6 +323,12 @@ export function assembleHtml(opts) {
     ? `<style>.bg{filter:saturate(${(1 + 0.12 * punch).toFixed(3)}) contrast(${(1 + 0.05 * punch).toFixed(3)})}</style>`
     : '';
 
+  // @AI:INTENT --glow — 글자 뒤에 넓게 번진 검은 음영(외곽선이 아니라 음영). 0=끔 · 1=기본 · 최대 2.
+  //   2026-10-28 대표 「카피 뒤에 음영이 없어 글자가 잘 안 보임」(고객사 채널) — 다른 채널(10/20)과 같은 지적이 두 번째다.
+  //   인자로 켜게 두면 또 잊는다 → «기본으로 켠다». 밝은 사무실·창가 배경에서 노랑 서브가 묻히던 것을 막는다.
+  // @AI:CONSTRAINT 값은 glowStrength() 로만 해석한다(0~2 · 숫자 아니면 기본 1) — CSS 주입 방어.
+  const glowVars = glowCss(glowStrength(opts.glow));
+
   const tagSet = buildTagLayer(opts, L.width, L.height);
 
   html = html
@@ -318,7 +350,7 @@ export function assembleHtml(opts) {
   // 색 + 외곽선 두께 + 폰트 + 서브카피 override 주입 (head 끝 — 기존 <link>/base CSS보다 뒤라 이게 이긴다)
   // @AI:DEPENDS colorVars 는 «항상» 주입된다(프리셋 기본값이라도). base CSS 의 :root 기본값과 같은 값이
   //   들어가므로 렌더 결과는 종전과 동일하지만, HTML 문자열을 그대로 비교하는 검사는 이 줄을 본다.
-  html = html.replace('</head>', `${tagSet.head}\n${colorVars}\n${layoutVars}\n${fontVars}\n${strokeVars}\n${subVars}\n${titleVars}\n${punchVars}\n</head>`);
+  html = html.replace('</head>', `${tagSet.head}\n${colorVars}\n${layoutVars}\n${fontVars}\n${strokeVars}\n${subVars}\n${titleVars}\n${punchVars}\n${glowVars}\n</head>`);
 
   // @AI:DEPENDS .frame(흰 테두리)은 A/B/C 세 템플릿에 모두 있고 항상 맨 위에 그려진다.
   //   지목 세트를 그 **직전**에 넣어야 프레임 선 아래로 들어간다.

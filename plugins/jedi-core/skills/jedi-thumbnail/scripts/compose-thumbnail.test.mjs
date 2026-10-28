@@ -520,3 +520,23 @@ test('렌더 요청보다 출처 검사가 먼저다', () => {
   const main = src.slice(src.indexOf('async function main()'));
   assert.ok(main.indexOf('await checkRights(o)') > 0 && main.indexOf('await checkRights(o)') < main.indexOf('render-thumbnail'));
 });
+
+// 2026-10-28 대표 「카피 뒤에 음영이 없어 글자가 잘 안 보임」 — 글자 뒤 음영은 «기본으로» 켜진다
+test('--glow 기본 = 켬 — 제목·서브 뒤에 번진 검은 음영', () => {
+  const { html } = assembleHtml({ ...BASE });
+  assert.ok(html.includes('.title{text-shadow:0 0 24px rgba(0,0,0,0.85)'));
+  assert.ok(html.includes('.subtitle{text-shadow:0 0 24px rgba(0,0,0,0.85)'));
+});
+
+test('--glow 0 이면 음영을 넣지 않는다(종전 모양)', () => {
+  const { html } = assembleHtml({ ...BASE, glow: '0' });
+  assert.equal(html.includes('.title{text-shadow:0 0 '), false);
+});
+
+test('--glow 는 0~2 로 묶이고 숫자가 아니면 기본 1 (CSS 주입 방어)', () => {
+  const big = assembleHtml({ ...BASE, glow: '9' }).html;
+  assert.ok(big.includes('0 0 126px rgba(0,0,0,1.00)'), '2 로 묶임');
+  const bad = assembleHtml({ ...BASE, glow: '1;}body{display:none' }).html;
+  assert.equal(bad.includes('display:none'), false);
+  assert.ok(bad.includes('.title{text-shadow:0 0 24px rgba(0,0,0,0.85)'));
+});
