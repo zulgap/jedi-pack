@@ -361,8 +361,14 @@ const HANDLERS = {
     if (a.binary) {
       // 🔴 두 번째 울타리(서버 lintPlan 이 첫째) — 회사가 등록한 계획(save_setup_plan)도 여기로 온다. 실행 파일은 «이름»만, 확인 인자는 정해진 넷만
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(String(a.binary)) || (a.version_arg !== undefined && !['-version', '--version', '-v', '-V'].includes(a.version_arg))) return { state: 'failed', code: 'bad_args' };
-      const r = c.run(a.binary, [a.version_arg || '-version'], { encoding: 'utf8', timeout: 20000 });
-      return r.status === 0 ? { state: 'ok' } : { state: 'missing', code: 'binary_missing', note: a.binary };
+      // 🔴 확인 인자를 안 정한 계획은 `-version`(ffmpeg 모양) 다음 `--version` 도 본다 — node 는 `-version` 을 «bad option»(끝 코드 9)으로
+      //   거부해 깔려 있어도 늘 «없음»이었다(10/29 · 교수님 맥 월가한잔 V2 «준비 안 됨 · node» 오경보). 하나라도 0 이면 있다.
+      const tries = a.version_arg !== undefined ? [a.version_arg] : ['-version', '--version'];
+      for (const v of tries) {
+        const r = c.run(a.binary, [v], { encoding: 'utf8', timeout: 20000 });
+        if (r.status === 0) return { state: 'ok' };
+      }
+      return { state: 'missing', code: 'binary_missing', note: a.binary };
     }
     if (a.python_import) {
       // pip 은 이름 또는 «이름+판 조건»(`pillow<13`) — 조건이 있으면 깔린 판까지 본다(10/23 · Pillow 13 에서 그림 단계가 멈춘 사고 뒤 판 고정 길)
@@ -609,6 +615,17 @@ function selftest() {
     }).then(([bad13, ok12]) => {
       cases.push(['🔴 pip 판 조건 — 13 깔림 + 「<13」 = missing · 안내에 따옴표', bad13[0].state === 'missing' && bad13[0].code === 'python_version_mismatch' && bad13[0].note === '13.0.0 깔림 → pip install "pillow<13"' && bad13[1].code === 'bad_args']);
       cases.push(['pip 판 조건 — 12 깔림 = ok', ok12[0].state === 'ok' && ok12[0].code === 'version_ok']);
+      // 🔴 node 처럼 `-version` 을 거부하고 `--version` 만 받는 프로그램(10/29 교수님 맥 오경보) — 인자 미지정이면 둘 다 본다 · 지정하면 그것만
+      const nCalls = [];
+      const nodeRun = (cmd, args) => { nCalls.push(args[0]); return { status: cmd === 'node' && args[0] === '--version' ? 0 : 9, stdout: '', stderr: '' }; };
+      return Promise.all([
+        runPlan({ steps: [{ id: 'n', kind: 'tool', who: 'code', args: { binary: 'node' } }] }, { home: path.join(tmp, 'home5'), run: nodeRun, roots: [] }),
+        runPlan({ steps: [{ id: 'n2', kind: 'tool', who: 'code', args: { binary: 'node', version_arg: '-version' } }, { id: 'g', kind: 'tool', who: 'code', args: { binary: 'gone' } }] }, { home: path.join(tmp, 'home5'), run: nodeRun, roots: [] }),
+      ]).then(([n1, n2]) => {
+        cases.push(['🔴 인자 미지정 = -version 실패 뒤 --version 으로 있음(node)', n1[0].state === 'ok' && nCalls[0] === '-version' && nCalls[1] === '--version']);
+        cases.push(['인자 지정이면 그것만 · 둘 다 실패면 missing', n2[0].state === 'missing' && n2[1].state === 'missing' && n2[1].code === 'binary_missing']);
+      });
+    }).then(() => {
       const tg = feedbackTag({ skill: 'zulgap-ahn-youtube-edit', plan_hash: 'abcdef012345', pc: 'PC-1', items: [
         { kind: 'manual_step', target: 'SKILL.md 「NAS 연결」', fix: 'hosts 한 줄\n안내', scope: 'common' }, { kind: 'bogus', target: 'x' }, { kind: 'not_working', target: '' }, { kind: 'plan_gap', target: '계획 raw_root_line' }] });
       const tj = JSON.parse(tg.replace(/^setup_feedback: /, ''));

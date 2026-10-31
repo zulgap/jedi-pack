@@ -8,12 +8,16 @@
   편집 (입력 .hwp/.hwpx → 출력 .hwp 이면 PDF 를 뽑아 verify 까지 자동)
     python hwpform.py replace     <입력> <출력> --map 바꿀목록.txt|.json  [--set "옛=>새" ...]
     python hwpform.py color-dates <입력> <출력> [--only "2026.10.21|2026.10.22"] [--expect N]
+    python hwpform.py recolor <입력> <출력> --text "채운 글자|…" [--color #000000] [--keep-italic] [--expect N]
     python hwpform.py margin      <입력> <출력> --top 8 --bottom 5   (mm 명시값)
     python hwpform.py pics        <입력> <출력> --cell 11,0 --cols 2 --images a.jpg b.jpg [--captions ...]
     python hwpform.py stamp       <입력> <출력.hwp> --after "(인)" --image 도장.png [--mm 15]   한컴 필요
     python hwpform.py delete-pics <입력> <출력> --near "(인)" [--name 도장.png] [--expect N]
     python hwpform.py table-split <입력> <출력> --contains "편 구성" --rows 8 [--header 1] [--page-break]
     python hwpform.py fill        <입력> <출력> --cells 칸.json   ({"행,열": "값\\n둘째 줄", …})
+    python hwpform.py delete-rows  <입력> <출력.hwp> --table 3 --rows 8 [--must-contain "글자"]  (줄 0부터 · 3-5 · 2,4)
+    python hwpform.py delete-table <입력> <출력.hwp> --table 4 [--caption "표 제목"] [--must-contain "글자"]
+      (지우기 둘은 원본·결과를 PDF 로 재서 쪽수 변화 보고 + 지운 곳 밖 글자 대조 — 못 재면 실패)
       공통: [--pdf 결과.pdf] [--expect-pages N]
   검수
     python hwpform.py verify   <결과.pdf> [--expect-pages N] [--baseline 기존.pdf]
@@ -469,12 +473,15 @@ def cmd_verify(pdf, expect_pages=None, baseline=None, absent=None, expect_red=No
 HEADER = 'Contents/header.xml'   # 🔴 H.HPF 가 아니다(함정 ⑭) — 글자 서식은 여기
 
 
-def run_edit(src, dst, edit, pdf=None, expect_pages=None):
+def run_edit(src, dst, edit, pdf=None, expect_pages=None, measure=False):
     """모든 편집 명령이 지나는 한 길.
 
     src  : .hwp 또는 .hwpx (원본은 절대 덮어쓰지 않는다)
     dst  : .hwpx 면 한컴 없이 끝난다 / .hwp 면 한컴으로 바꾸고 같은 이름 .pdf 도 뽑는다
     edit : parts{zip 안 경로: XML} 를 고치고 True(저장) / False(멈춤) 를 돌려주는 함수
+    measure : 지우기 명령용 — 원본도 PDF 로 뽑아 «쪽수 변화를 보고»하고(쪽수가 줄어도 실패 아님)
+              ctx['pdf_check'](원본 PDF, 결과 PDF) 의 문제 목록을 검수에 더한다.
+              🔴 PDF 를 못 뽑으면(.hwpx 출력에 --pdf 없음) 저장하지 않고 실패 — 못 잰 것을 통과로 두지 않는다.
     """
     if os.path.abspath(src).lower() == os.path.abspath(dst).lower():
         sys.exit('원본을 덮어쓸 수 없습니다 — 결과 파일 이름을 따로 주세요(양식이 깨지면 처음부터다).')
@@ -482,9 +489,10 @@ def run_edit(src, dst, edit, pdf=None, expect_pages=None):
         sys.exit('파일이 없습니다: %s' % src)
     tmp = tempfile.mkdtemp(prefix='hwpform-')
     work, src_pages = src, None
+    src_pdf = os.path.join(tmp, 'src.pdf') if measure else None
     if src.lower().endswith('.hwp'):
         work = os.path.join(tmp, 'in.hwpx')
-        src_pages = convert(src, work)['pages']
+        src_pages = convert(src, work, src_pdf)['pages']
         print('원본 %d쪽 → 작업용 hwpx' % src_pages)
     elif not src.lower().endswith('.hwpx'):
         sys.exit('.hwp 또는 .hwpx 를 넣어주세요: %s' % src)
@@ -512,6 +520,13 @@ def run_edit(src, dst, edit, pdf=None, expect_pages=None):
         sys.exit('🔴 바뀐 것이 0건입니다 — 저장하지 않았습니다.')
 
     ext = os.path.splitext(dst)[1].lower()
+    if measure:
+        if ext == '.hwpx' and not pdf:
+            sys.exit('🔴 지운 뒤 쪽수·글자를 잴 PDF 가 없습니다 — 저장하지 않았습니다.\n'
+                     '  출력을 .hwp 로 주거나 --pdf <결과.pdf> 를 붙이세요(한컴 필요).')
+        if src_pages is None:
+            src_pages = convert(src, src_pdf)['pages']
+            print('원본 %d쪽 (PDF 로 잼)' % src_pages)
     if ext == '.hwpx':
         H.save(work, dst, replaced=changed, add_files=ctx['adds'])
         print('저장: %s' % dst)
@@ -529,8 +544,18 @@ def run_edit(src, dst, edit, pdf=None, expect_pages=None):
         sys.exit('결과 파일은 .hwp 또는 .hwpx 여야 합니다: %s' % dst)
 
     want = expect_pages or src_pages or r['baseline_pages']
+    if measure:
+        want = expect_pages      # 지우면 쪽수가 줄 수 있다 — 기대를 준 때만 대조하고, 아니면 변화를 보고한다
     print('')
     problems = cmd_verify(pdf, want, **ctx['verify'])
+    if measure:
+        if not src_pages or not r.get('pages'):
+            problems.append('쪽수를 못 잼')
+        else:
+            d = r['pages'] - src_pages
+            print('쪽수 변화: %d쪽 → %d쪽 (%s)' % (src_pages, r['pages'],
+                                             '그대로' if not d else ('%d쪽 줄었음' % -d if d < 0 else '%d쪽 늘었음' % d)))
+        problems += ctx['pdf_check'](src_pdf, pdf, (src_pages or 0) - (r.get('pages') or 0))
     if problems:
         sys.exit('🔴 검수 실패 %d건 — %s' % (len(problems), ' / '.join(problems)))
 
@@ -643,6 +668,46 @@ def cmd_color_dates(a):
     run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages)
 
 
+def cmd_recolor(a):
+    """지정한 글자만 색을 바꾼다(기본 검정 + 기울임 해제) — 양식의 파란 기울임 안내 칸을 채운 뒤
+    그 글자를 본문 글자로 돌릴 때. 그 글자의 서식을 복제해 색(·기울임)만 바꾼다.
+
+    🔴 글자를 «통째» 준다(정규식 아님 · | 로 여러 개). 못 찾은 글자가 하나라도 있으면 멈춘다 —
+    replace 로 바꾼 값이 조각나 있으면 여기서 드러난다.
+    """
+    lits = [x for x in a.text.split('|') if x.strip()]
+    if not lits:
+        sys.exit('바꿀 글자를 --text "글자1|글자2" 로 주세요.')
+    pattern = '|'.join(re.escape(x) for x in sorted(lits, key=len, reverse=True))
+    plain = not a.keep_italic
+
+    def edit(parts, ctx):
+        cache, hits, already = {}, [], []
+        for n in _sections(parts):
+            parts[n], parts[HEADER], h, al = H.color_matches(
+                parts[n], parts[HEADER], pattern, a.color, cache, plain=plain)
+            hits += h
+            already += al
+        print('색 바꾼 글자 %d곳%s → %s%s' % (
+            len(hits), ('  (이미 그 모양 %d곳)' % len(already)) if already else '',
+            a.color, '' if a.keep_italic else ' · 기울임 해제'))
+        for x in hits:
+            print('  · %s' % x)
+        miss = [x for x in lits if not any(x in h for h in hits + already)]
+        if miss:
+            print('🔴 못 찾은 글자 %d개: %r — 글자가 서식 경계로 조각나 있거나 띄어쓰기가 다르다' % (len(miss), miss))
+            return False
+        if a.expect is not None and len(hits) + len(already) != a.expect:
+            print('🔴 기대 %d곳인데 %d곳' % (a.expect, len(hits) + len(already)))
+            return False
+        if not hits:
+            print('🔴 바꿀 글자가 0곳입니다(모두 이미 그 모양).')
+            return False
+        return True
+
+    run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages)
+
+
 def cmd_margin(a):
     """여백을 mm 명시값으로 — 모든 구역에 같은 값."""
     want = {k: getattr(a, k) for k in H.MARGIN_KEYS if getattr(a, k) is not None}
@@ -748,6 +813,244 @@ def cmd_table_split(a):
         return True
 
     run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages)
+
+
+def cmd_add_lines(a):
+    """기준 글자가 든 문단 바로 뒤에 같은 모양 문단을 줄마다 더한다."""
+    lines = list(a.lines or [])
+    if a.file:
+        lines += [ln for ln in open(a.file, encoding='utf-8-sig').read().splitlines()]
+    if not lines:
+        sys.exit('더할 줄이 없습니다 — --lines 또는 --file')
+
+    def edit(parts, ctx):
+        done = 0
+        for n in _sections(parts):
+            if escape(a.after) not in ''.join(H.para_texts(parts[n]).values()):
+                continue
+            try:
+                parts[n] = H.insert_paras_after(parts[n], a.after, lines)
+            except ValueError as e:
+                print('🔴 %s' % e)
+                return False
+            done += 1
+        if done != 1:
+            print('🔴 %r 가 든 구역이 %d개' % (a.after, done))
+            return False
+        print('%r 뒤에 %d줄 더함' % (a.after, len(lines)))
+        ctx['verify']['present'] = [ln for ln in lines if ln.strip()]
+        return True
+
+    run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages)
+
+
+def cmd_text_table(a):
+    """그림 하나를 같은 자리·같은 폭의 «글자 표»로 바꾼다 — 칸 모양은 양식 안 진짜 칸에서 빌린다."""
+    spec = json.loads(open(a.rows, encoding='utf-8-sig').read())
+    head, body = spec.get('head'), spec['rows']
+    rows = ([head] if head else []) + body
+    ratio = [float(v) for v in a.widths.split(',')]
+    if any(len(r) != len(ratio) for r in rows):
+        sys.exit('줄마다 칸 수가 --widths 개수(%d)와 같아야 합니다' % len(ratio))
+
+    def addr(k):
+        return _parse_cell_key(k)
+
+    def edit(parts, ctx):
+        sec = 'Contents/section%d.xml' % a.section
+        x = parts[sec]
+        try:
+            st_head = H.cell_style(x, *addr(a.head_like or a.label_like))
+            st_label = H.cell_style(x, *addr(a.label_like))
+            st_value = H.cell_style(x, *addr(a.value_like))
+        except KeyError as e:
+            print('🔴 모양을 빌릴 칸이 없습니다: %s' % e)
+            return False
+        styles = []
+        for ri in range(len(rows)):
+            if head and ri == 0:
+                styles.append([st_head] * len(ratio))
+            else:
+                styles.append([st_label] + [st_value] * (len(ratio) - 1))
+        ids = H.next_ids(parts[H.HPF], *[parts[s] for s in _sections(parts)])
+        try:
+            parts[sec], w = H.replace_pic_with_table(x, a.pic, rows, ratio, styles, ids['obj'])
+        except ValueError as e:
+            print('🔴 %s' % e)
+            return False
+        print('그림 %r → 글자 표 %d줄 × %d칸 (폭 %.1fmm)' % (a.pic, len(rows), len(ratio), w / H.MM))
+        ctx['verify']['present'] = [ln for r in rows for c in r for ln in str(c).split('\n') if ln.strip()]
+        return True
+
+    run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages)
+
+
+def _pick_table(parts, table=None, contains=None):
+    """(구역, 표 구간, 표 번호) — 표 번호는 inspect 「표 목록」 번호, 아니면 그 글자가 든 가장 안쪽 표.
+    🔴 지우기는 되돌릴 수 없어서, 그 글자가 서로 다른 표 여럿에 있으면 고르지 않고 멈춘다(None)."""
+    found = [(n, sp) for n in _sections(parts) for sp in H.tables(parts[n])]
+    if table:
+        if not 1 <= table <= len(found):
+            print('🔴 표 %d번은 없습니다 — 표는 1~%d번 (inspect 의 「표 목록」 번호)' % (table, len(found)))
+            return None
+        return found[table - 1] + (table,)
+    hits = [(k + 1, n, sp) for k, (n, sp) in enumerate(found) if escape(contains) in parts[n][sp[0]:sp[1]]]
+    if not hits:
+        print('🔴 %r 가 든 표가 없습니다' % contains)
+        return None
+    inner = [h for h in hits if not any(o is not h and o[1] == h[1] and h[2][0] < o[2][0] and o[2][1] < h[2][1]
+                                        for o in hits)]
+    if len(inner) > 1:
+        print('🔴 %r 가 든 표가 %d개입니다(표 %s번) — --table 번호로 고르세요'
+              % (contains, len(inner), ', '.join(str(h[0]) for h in inner)))
+        return None
+    k, n, sp = inner[0]
+    return n, sp, k
+
+
+_PAGE_NO = re.compile(r'^[-\s]*\d{1,3}[-\s]*(?:/\s*\d{1,3})?$')
+
+
+def _flat(s):
+    return re.sub(r'\s+', '', s)
+
+
+def _pdf_lines(pdf):
+    """PDF 글자 줄들(공백 뺀 것)."""
+    import fitz
+    return [f for p in fitz.open(pdf) for f in map(_flat, p.get_text().split('\n')) if f]
+
+
+def _removal_problems(src_pdf, out_pdf, removed, pages_dropped=0):
+    """원본 PDF 와 결과 PDF 의 본문 글자 대조 — 사라진 글자는 전부 «지운 것» 안에 있어야 하고 새로 생긴 글자는 없어야 한다.
+
+    쪽수가 줄었으면 사라진 쪽의 쪽 번호(숫자만 있는 조각)만 봐준다 — 새로 생긴 글자는 언제나 문제다.
+    문제 목록을 돌려준다(빈 목록 = 통과). 🔴 못 재면(PDF 없음·글자 0) 문제로 돌려준다 — 통과로 두지 않는다.
+    """
+    import difflib
+    if not (src_pdf and os.path.exists(src_pdf) and out_pdf and os.path.exists(out_pdf)):
+        return ['원본/결과 PDF 가 없어 글자 대조를 못 함']
+    a, b = _pdf_lines(src_pdf), _pdf_lines(out_pdf)
+    if not a or not b:
+        return ['PDF 에서 글자를 못 읽어 대조를 못 함 (원본 %d줄 · 결과 %d줄)' % (len(a), len(b))]
+    pieces = [p for p in map(_flat, removed) if p]
+    pool = ''.join(pieces)
+
+    def removable(line):
+        # 🔴 조각 «하나» 안에 든 줄만 지운 것으로 본다 — 표 제목과 표처럼 PDF 에 나오는 순서가
+        #    지운 순서와 달라도 줄 단위라 맞고, 한 글자씩 아무 데서나 맞춰 통과시키지 않는다.
+        return (any(line in p for p in pieces) or line in pool
+                or (pages_dropped > 0 and bool(_PAGE_NO.match(line))))
+
+    gone, extra = [], []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == 'equal':
+            continue
+        old = ''.join(l for l in a[i1:i2] if not removable(l))
+        new = ''.join(b[j1:j2])
+        if old == new:
+            continue
+        for op2, k1, k2, l1, l2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            if op2 in ('delete', 'replace'):
+                gone.append(old[k1:k2])
+            if op2 in ('insert', 'replace'):
+                extra.append(new[l1:l2])
+    lost = sum(len(x) for x in a) - sum(len(x) for x in b)
+    probs = []
+    if gone:
+        print('!! 지운 표/줄 «밖»의 글자가 사라졌습니다 %d곳: %r' % (len(gone), [g[:30] for g in gone[:5]]))
+        probs.append('지운 곳 밖 글자 사라짐 %d곳' % len(gone))
+    if extra:
+        print('!! 원본에 없던 글자가 생겼습니다 %d곳: %r' % (len(extra), [e[:30] for e in extra[:5]]))
+        probs.append('새로 생긴 글자 %d곳' % len(extra))
+    if not gone and not extra:
+        print('본문 글자 대조(PDF): 지운 표/줄 밖 글자는 원본과 같음 — 사라진 %d자는 전부 지운 것 안' % lost)
+    return probs
+
+
+def _xml_same_outside(before, after, spans):
+    """지운 구간 밖 문단 글자가 그대로인가 (XML 기준 · 한컴 없이)."""
+    want = [t for p, t in H.para_texts(before).items() if not any(a <= p < b for a, b in spans)]
+    got = list(H.para_texts(after).values())
+    if want != got:
+        print('🔴 지운 곳 밖 문단 글자가 달라졌습니다 (기대 %d문단 · 결과 %d문단)' % (len(want), len(got)))
+        return False
+    print('본문 글자 대조(XML): 지운 곳 밖 문단 %d개 글자 그대로' % len(got))
+    return True
+
+
+def cmd_delete_rows(a):
+    """표 하나에서 줄을 지운다 — 줄 번호는 0부터(머리 줄 = 0, inspect 의 rN)."""
+    try:
+        rows = H.parse_rows(a.rows)
+    except ValueError as e:
+        sys.exit('🔴 %s' % e)
+
+    def edit(parts, ctx):
+        pick = _pick_table(parts, a.table, a.contains)
+        if not pick:
+            return False
+        n, sp, k = pick
+        before = parts[n]
+        tbl = before[sp[0]:sp[1]]
+        trs = H.table_rows(tbl)
+        texts = H.table_row_texts(tbl)
+        try:
+            xml, gone = H.delete_table_rows(before, sp, rows)
+        except ValueError as e:
+            print('🔴 표 %d번: %s' % (k, e))
+            return False
+        if a.must_contain and not all(any(_flat(m) in _flat(g) for g in gone) for m in a.must_contain):
+            print('🔴 지울 줄에 %r 가 없습니다 — 줄 번호를 다시 보세요. 표 %d번의 줄:' % (a.must_contain, k))
+            for i, t in enumerate(texts):
+                print('   %2d  %s' % (i, t[:60]))
+            return False
+        parts[n] = xml
+        print('표 %d번 (%d줄) 에서 %d줄 지움:' % (k, len(trs), len(gone)))
+        for r, g in zip(rows, gone):
+            print('  - %d번 줄  %s' % (r, g[:60]))
+        spans = [(sp[0] + trs[r][0], sp[0] + trs[r][1]) for r in rows]
+        if not _xml_same_outside(before, xml, spans):
+            return False
+        ctx['pdf_check'] = lambda s, o, dp: _removal_problems(s, o, gone, dp)
+        return True
+
+    run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages, measure=True)
+
+
+def cmd_delete_table(a):
+    """표 하나를 통째로 지운다 (표만 든 문단은 문단째) · --caption 으로 표 제목 문단도 함께."""
+    def edit(parts, ctx):
+        pick = _pick_table(parts, a.table, a.contains)
+        if not pick:
+            return False
+        n, sp, k = pick
+        before = parts[n]
+        rows = len(H.table_rows(before[sp[0]:sp[1]]))
+        try:
+            cap_span = H.para_with_text(before, a.caption) if a.caption else None
+            xml, text, whole = H.delete_table(before, sp)
+            removed = [text]
+            if a.caption:
+                xml, cap = H.delete_para_with_text(xml, a.caption)
+                removed.append(cap)
+        except ValueError as e:
+            print('🔴 %s' % e)
+            return False
+        if a.must_contain and not all(_flat(m) in _flat(text) for m in a.must_contain):
+            print('🔴 표 %d번에 %r 가 없습니다 — 표 번호를 다시 보세요 (inspect 「표 목록」)' % (k, a.must_contain))
+            return False
+        parts[n] = xml
+        pspan = H.para_of(H.para_spans(before), sp[0])
+        spans = [pspan if whole else sp] + ([cap_span] if cap_span else [])
+        print('표 %d번 (%d줄) 지움%s%s — 첫 글자 %r' % (k, rows, ' · 표만 든 문단째' if whole else ' · 문단은 남김',
+                                                (' · 제목 문단 %r 도' % a.caption) if a.caption else '', text[:30]))
+        if not _xml_same_outside(before, xml, spans):
+            return False
+        ctx['pdf_check'] = lambda s, o, dp: _removal_problems(s, o, removed, dp)
+        return True
+
+    run_edit(a.src, a.dst, edit, a.pdf, a.expect_pages, measure=True)
 
 
 def _parse_cell_key(k):
@@ -1051,6 +1354,12 @@ def main():
     x.add_argument('--only', help='이 날짜들만 (| 로 구분). 안 주면 날짜 모양 전부')
     x.add_argument('--color', default='#DC0000')
     x.add_argument('--expect', type=int, help='칠할 곳 수 (이미 그 색인 곳 포함)')
+    x = sub.add_parser('recolor')
+    edit_args(x)
+    x.add_argument('--text', required=True, help='색을 바꿀 글자 (| 로 여러 개 · 통째 일치)')
+    x.add_argument('--color', default='#000000')
+    x.add_argument('--keep-italic', action='store_true', help='기울임은 그대로 둔다 (기본: 기울임 해제)')
+    x.add_argument('--expect', type=int, help='바꿀 곳 수 (이미 그 모양인 곳 포함)')
     x = sub.add_parser('margin')
     edit_args(x)
     for k in H.MARGIN_KEYS:
@@ -1091,6 +1400,32 @@ def main():
     x.add_argument('--rows', type=int, required=True)
     x.add_argument('--header', type=int, default=1)
     x.add_argument('--page-break', action='store_true', help='나눈 표마다 새 쪽에서')
+    x = sub.add_parser('add-lines')
+    edit_args(x)
+    x.add_argument('--after', required=True, help='이 글자가 든 문단 바로 뒤에 (정확히 1문단)')
+    x.add_argument('--lines', nargs='+', help='더할 줄들 (줄마다 문단 하나)')
+    x.add_argument('--file', help='더할 줄 파일 (한 줄 = 문단 하나)')
+    x = sub.add_parser('text-table')
+    edit_args(x)
+    x.add_argument('--pic', required=True, help='바꿀 그림 — 그림 이름(inspect·shapeComment) 또는 image 번호(image2)')
+    x.add_argument('--rows', required=True, help='{"head": [..], "rows": [[..], ..]} JSON (칸 안 \\n = 문단)')
+    x.add_argument('--widths', required=True, help='열 폭 비율 — 예 32,68 (그림 폭을 나눈다)')
+    x.add_argument('--label-like', required=True, help='첫 열 칸 모양을 빌릴 칸 「행,열[@n]」')
+    x.add_argument('--value-like', required=True, help='나머지 열 칸 모양을 빌릴 칸')
+    x.add_argument('--head-like', help='머리 줄 칸 모양 (없으면 --label-like)')
+    x.add_argument('--section', type=int, default=0)
+    for name in ('delete-rows', 'delete-table'):
+        x = sub.add_parser(name)
+        edit_args(x)
+        g = x.add_mutually_exclusive_group(required=True)
+        g.add_argument('--table', type=int, help='inspect 「표 목록」 번호')
+        g.add_argument('--contains', help='이 글자가 든 표 (서로 다른 표 여럿에 있으면 멈춤)')
+        x.add_argument('--must-contain', action='append',
+                       help='지울 줄/표에 이 글자가 있어야 한다 — 엉뚱한 곳을 지우지 않게 (여러 번)')
+        if name == 'delete-rows':
+            x.add_argument('--rows', required=True, help='지울 줄 번호 0부터(머리 줄 = 0): 8 · 3-5 · 2,4')
+        else:
+            x.add_argument('--caption', help='글자가 정확히 이것인 문단(표 제목)도 함께 지운다')
 
     a = ap.parse_args()
     if a.cmd == 'inspect':
@@ -1107,6 +1442,8 @@ def main():
         cmd_replace(a)
     elif a.cmd == 'color-dates':
         cmd_color_dates(a)
+    elif a.cmd == 'recolor':
+        cmd_recolor(a)
     elif a.cmd == 'margin':
         cmd_margin(a)
     elif a.cmd == 'pics':
@@ -1119,6 +1456,14 @@ def main():
         cmd_table_split(a)
     elif a.cmd == 'fill':
         cmd_fill(a)
+    elif a.cmd == 'add-lines':
+        cmd_add_lines(a)
+    elif a.cmd == 'text-table':
+        cmd_text_table(a)
+    elif a.cmd == 'delete-rows':
+        cmd_delete_rows(a)
+    elif a.cmd == 'delete-table':
+        cmd_delete_table(a)
     else:
         print(__doc__)
         sys.exit(1)

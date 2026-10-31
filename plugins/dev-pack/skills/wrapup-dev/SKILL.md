@@ -32,8 +32,12 @@ f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plu
 
 ## Step 2 — Append one row to the team session journal
 
-Call `notion-create-pages`:
-- **parent**: `{"type":"data_source_id","data_source_id":"<output of the command below>"}` (team session journal DB)
+Call the jedi tool `ext_notion_create_page` first (company Notion connection on the server — works no matter which Claude account or PC you are on).
+Only if it returns `not_connected` or an error, fall back to this PC's Notion MCP `notion-create-pages`.
+(2026-10-31 — PC Notion logins are per Claude account; a switched account silently had no Notion login.)
+- **parent_id**: `collection://<output of the command below>` (fallback `notion-create-pages`: `{"type":"data_source_id","data_source_id":"<output>"}`) (team session journal DB)
+- **content_format**: `markdown`
+- With `ext_notion_create_page`, give properties flat — `{"세션": "...", "작성자": "...", "날짜": "YYYY-MM-DD", "유형": "개발", "한줄 요약": "..."}` (the `date:날짜:start` / `is_datetime` split is for the fallback only)
   ```
   f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/teampack-config.js"; node "$f" notion.team_journal_ds
   ```

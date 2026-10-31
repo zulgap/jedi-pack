@@ -129,6 +129,17 @@ check('--only 에 없는 날짜가 있으면 멈춤', rc != 0 and '못 찾은 �
 rc, o = run('color-dates', SAMPLE, out3, '--expect', '3')
 check('color-dates --expect 3 통과', rc == 0 and os.path.exists(out3), o)
 
+# recolor — 빨갛게 칠한 날짜를 검정으로 되돌린다 · 못 찾은 글자면 멈춘다
+red_dates = re.findall(H.DATE_RE, ''.join(H.para_texts(H.read(out3, H.SEC0)).values()))
+out3b = os.path.join(tmp, 'c-black.hwpx')
+rc, o = run('recolor', out3, out3b, '--text', red_dates[0])
+hdr3b = H.read(out3b, 'Contents/header.xml') if os.path.exists(out3b) else ''
+check('recolor 검정으로 되돌림', rc == 0 and '색 바꾼 글자 1곳' in o and 'textColor="#000000"' in hdr3b, o)
+rc, o = run('recolor', out3, os.path.join(tmp, 'c-miss.hwpx'), '--text', '없는글자XYZ')
+check('recolor 못 찾은 글자면 멈춤', rc != 0 and '못 찾은 글자' in o, o)
+hh, nid = H.clone_char_pr('<hh:charProperties itemCnt="1"><hh:charPr id="9" textColor="#0000FF"><hh:italic/></hh:charPr></hh:charProperties>', '9', '#000000', plain=True)
+check('clone_char_pr plain=True 기울임 해제', nid == '10' and 'textColor="#000000"' in hh and hh.count('<hh:italic/>') == 1, hh)
+
 out4 = os.path.join(tmp, 'm.hwpx')
 rc, o = run('margin', SAMPLE, out4, '--top', '8')
 check('margin exit 0', rc == 0 and round(H.get_margins(H.read(out4, H.SEC0))['top'], 1) == 8.0, o)
@@ -243,6 +254,121 @@ check('pics 명령 exit 0 · 그림 파일이 패키지에', rc == 0 and len([
 rc, o = run('delete-pics', S2, os.path.join(tmp, 'd.hwpx'), '--near', '(인)')
 check('지울 그림 0개면 멈춤', rc != 0 and '지울 그림이 없' in o, o)
 
+# ── 7-b. 문단 더하기 · 그림 → 글자 표 ─────────────────────────────
+ax = H.insert_paras_after(sec, '작성일', ['첫 줄 & 둘', '둘째 줄'])
+H.check_wellformed(s=ax)
+pt = [t for t in H.para_texts(ax).values() if t.strip()]
+i = next(k for k, t in enumerate(pt) if '작성일' in t)
+check('add-lines = 기준 문단 바로 뒤 · 순서대로 · 이스케이프', pt[i + 1:i + 3] == ['첫 줄 &amp; 둘', '둘째 줄'], pt[i:i + 3])
+src_p = next(n for n in H.text_nodes(sec) if '작성일' in n['inner'])
+new_p = next(n for n in H.text_nodes(ax) if n['inner'] == '둘째 줄')
+check('더한 문단 = 기준 문단과 같은 서식', new_p['char_pr'] == src_p['char_pr']
+      and re.search(r'paraPrIDRef="(\d+)"', ax[new_p['para'][0]:]).group(1)
+      == re.search(r'paraPrIDRef="(\d+)"', sec[src_p['para'][0]:]).group(1))
+try:
+    H.insert_paras_after(sec, '2026', ['x'])
+    check('기준 글자가 여러 문단이면 거부', False)
+except ValueError as e:
+    check('기준 글자가 여러 문단이면 거부', '정확히 1개' in str(e), e)
+rc, o = run('add-lines', SAMPLE, os.path.join(tmp, 'al.hwpx'), '--after', '없는 글자', '--lines', 'x')
+check('add-lines 없는 기준이면 멈춤', rc != 0, o)
+
+pp = os.path.join(tmp, 'p.hwpx')
+xp, hp = H.read(pp, H.SEC0), H.read(pp, H.HPF)
+key = re.findall(r'binaryItemIDRef="(image\d+)"', xp)[0]
+lab, val = H.cell_style(x2, 0, 0, 1), H.cell_style(x2, 1, 1)
+tx, w = H.replace_pic_with_table(xp, key, [['머리', '설명'], ['① 가', '첫 줄\n둘째 줄']], [30, 70],
+                                 [[lab, lab], [lab, val]], 1960000000)
+H.check_wellformed(s=tx)
+ta, tb = min(((a, b) for a, b in H.tables(tx) if '머리' in tx[a:b]), key=lambda s: s[1] - s[0])   # 가장 안쪽 표
+t = tx[ta:tb]
+check('text-table = 그림 자리에 2행 2열 · 그림은 사라짐', key not in tx and 'rowCnt="2" colCnt="2"' in t, key)
+cw = [int(v) for v in re.findall(r'<hp:cellSz width="(\d+)"', t)]
+check('text-table 폭 = 그림 폭 · 30:70', cw[0] + cw[1] == w and abs(cw[0] - w * 0.3) <= 1, (cw, w))
+check('text-table 칸 모양 = 빌린 칸 모양', 'borderFillIDRef="%s"' % val['border_fill'] in t
+      and 'charPrIDRef="%s"><hp:t>첫 줄' % val['char_pr'] in t)
+check('text-table 칸 안 줄바꿈 = 문단', t.count('<hp:t>첫 줄</hp:t>') == 1 and '<hp:t>둘째 줄</hp:t>' in t)
+try:
+    H.replace_pic_with_table(xp, 'image999', [['a']], [1], [[lab]], 1)
+    check('없는 그림이면 거부', False)
+except ValueError:
+    check('없는 그림이면 거부', True)
+rows_j = os.path.join(tmp, 'rows.json')
+json.dump({'head': ['a', 'b'], 'rows': [['c', 'd']]}, open(rows_j, 'w', encoding='utf-8'))
+rc, o = run('text-table', pp, os.path.join(tmp, 'tt.hwpx'), '--pic', key, '--rows', rows_j, '--widths', '1,1',
+            '--label-like', '0,0@1', '--value-like', '1,1')
+check('text-table 명령 exit 0', rc == 0 and '글자 표 2줄 × 2칸' in o, o)
+
+# ── 7-1. 표 줄 지우기 · 표 통째 지우기 (XML) ─────────────────────
+check('줄 번호 읽기 8 · 3-5 · 2,4,6-7', H.parse_rows('8') == [8] and H.parse_rows('3-5') == [3, 4, 5]
+      and H.parse_rows('2,4,6-7') == [2, 4, 6, 7])
+for bad_spec in ('', 'a', '5-3'):
+    try:
+        H.parse_rows(bad_spec)
+        check('줄 번호 틀린 모양 거부 %r' % bad_spec, False)
+    except ValueError:
+        check('줄 번호 틀린 모양 거부 %r' % bad_spec, True)
+big_t = x2[big[0]:big[1]]
+dr, gone = H.delete_table_rows(x2, big, [3, 4, 5])
+H.check_wellformed(s=dr)
+t_after = dr[H.tables(dr)[1][0]:H.tables(dr)[1][1]]
+check('줄 지우기 21줄 → 18줄 · rowCnt 18', len(H.table_rows(t_after)) == 18
+      and re.search(r'rowCnt="(\d+)"', t_after).group(1) == '18', len(H.table_rows(t_after)))
+check('줄 지우기 = 지운 줄 글자 3개 · 3·4·5', [g[:1] for g in gone] == ['3', '4', '5']
+      and '시험 줄 3 ' not in t_after and '시험 줄 5 ' not in t_after and '시험 줄 6 ' in t_after, gone)
+check('줄 지우기 뒤 행 주소 0부터 빈틈없이', sorted({int(v) for v in re.findall(r'rowAddr="(\d+)"', t_after)})
+      == list(range(18)))
+h0 = int(re.search(r'<hp:sz width="\d+" widthRelTo="\w+" height="(\d+)"', big_t).group(1))
+h1 = int(re.search(r'<hp:sz width="\d+" widthRelTo="\w+" height="(\d+)"', t_after).group(1))
+check('줄 지우기 뒤 표 높이 줄어듦', h1 < h0, (h0, h1))
+check('줄 지우기 = 표 밖 문단 글자 그대로', [t for p, t in H.para_texts(x2).items() if p < big[0]]
+      == [t for p, t in H.para_texts(dr).items() if p < big[0]])
+for rows_bad, why in (([21], '없는 줄'), ([0, 25], '없는 줄'), (list(range(21)), '전부')):
+    try:
+        H.delete_table_rows(x2, big, rows_bad)
+        check('줄 지우기 거부 — %s %r' % (why, rows_bad[:3]), False)
+    except ValueError as e:
+        check('줄 지우기 거부 — %s %r' % (why, rows_bad[:3]), why in str(e), e)
+try:
+    H.delete_table_rows(merged, big, [8])
+    check('합쳐진 칸 일부만 지우기 거부', False)
+except ValueError as e:
+    check('합쳐진 칸 일부만 지우기 거부', '합쳐져' in str(e), e)
+dt, ttext, whole = H.delete_table(x2, big)
+H.check_wellformed(s=dt)
+check('표 지우기 = 표 하나 줄고 · 표만 든 문단째 · 글자 돌려줌', len(H.tables(dt)) == len(H.tables(x2)) - 1
+      and whole and '시험 줄 1 ' in ttext and '시험 줄' not in ''.join(H.para_texts(dt).values()))
+dt2, cap = H.delete_para_with_text(dt, '편 구성')
+check('표 제목 문단 지우기', cap == '편 구성' and '편 구성' not in ''.join(H.para_texts(dt2).values())
+      and '증빙 사진' in ''.join(H.para_texts(dt2).values()))
+try:
+    H.delete_para_with_text(x2, '시험')
+    check('제목 문단 글자가 정확히 맞는 것 1개가 아니면 거부', False)
+except ValueError:
+    check('제목 문단 글자가 정확히 맞는 것 1개가 아니면 거부', True)
+inner_doc = x2[:big[0]] + big_t.replace('<hp:t>번호</hp:t>', '<hp:t>번호</hp:t></hp:run><hp:run charPrIDRef="0">'
+                                         + x2[H.tables(x2)[0][0]:H.tables(x2)[0][1]], 1) + x2[big[1]:]
+inner = [s for s in H.tables(inner_doc) if s[0] > big[0]][0]
+di, _, whole_i = H.delete_table(inner_doc, inner)
+H.check_wellformed(s=di)
+check('칸 안 표 지우기 = 표만 빼고 칸 문단은 남김', not whole_i and '<hp:t>번호</hp:t>' in di
+      and len(H.tables(di)) == len(H.tables(inner_doc)) - 1)
+
+dts = os.path.join(tmp, 'dt.hwpx')
+rc, o = run('delete-table', S2, dts, '--table', '9')
+check('delete-table 없는 표 번호 = 실패 · 파일 안 만듦', rc == 1 and '표 9번은 없습니다' in o and not os.path.exists(dts), o)
+rc, o = run('delete-table', S2, dts, '--contains', '없는 글자')
+check('delete-table 없는 글자 = 실패', rc == 1 and '든 표가 없습니다' in o, o)
+rc, o = run('delete-rows', S2, dts, '--table', '2', '--rows', '21')
+check('delete-rows 범위 밖 줄 = 실패 · 파일 안 만듦', rc == 1 and '없는 줄' in o and not os.path.exists(dts), o)
+rc, o = run('delete-rows', S2, dts, '--table', '2', '--rows', '3', '--must-contain', '시험 줄 4')
+check('delete-rows 지울 줄에 확인 글자 없음 = 실패', rc == 1 and '가 없습니다' in o and not os.path.exists(dts), o)
+rc, o = run('delete-rows', S2, dts, '--table', '2', '--rows', '3')
+check('delete-rows 쪽수를 못 재면(.hwpx 에 --pdf 없음) 실패 · 저장 안 함',
+      rc == 1 and 'PDF 가 없습니다' in o and not os.path.exists(dts), o)
+rc, o = run('delete-table', S2, dts, '--table', '2', '--caption', '편 구성')
+check('delete-table 쪽수를 못 재면 실패 · 저장 안 함', rc == 1 and 'PDF 가 없습니다' in o and not os.path.exists(dts), o)
+
 # ── 8. 검수 — 옛 글자 · 빨간 날짜 · 그림 겹침 (PyMuPDF 로 PDF 를 합성) ───────
 try:
     import fitz
@@ -320,6 +446,30 @@ if fitz:
     check('검수: 통그림 위 타일은 겹침 아님', not any('겹침' in p for p in F.cmd_verify(tiles)))
     check('검수: 같은 자리 같은 크기 두 장 = 겹침', any('겹침' in p for p in F.cmd_verify(same)))
 
+    # 지우기 뒤 글자 대조 — 사라진 줄은 전부 지운 것 안 · 밖 글자가 사라지거나 새로 생기면 실패 · 쪽 번호
+    def pdf_of(path, pages):
+        d = fitz.open()
+        for lines in pages:
+            pg = d.new_page()
+            for i, ln in enumerate(lines):
+                pg.insert_text((72, 72 + 16 * i), ln, fontsize=11)
+        d.save(path)
+        return path
+    s0 = pdf_of(os.path.join(tmp, 'r0.pdf'), [['Title', 'Row one', 'Row two', 'Row three', 'Tail'], ['Next page', '2']])
+    s1 = pdf_of(os.path.join(tmp, 'r1.pdf'), [['Title', 'Row one', 'Row three', 'Tail', 'Next page']])
+    s2 = pdf_of(os.path.join(tmp, 'r2.pdf'), [['Title', 'Row one', 'Row three', 'Next page']])
+    s3 = pdf_of(os.path.join(tmp, 'r3.pdf'), [['Title', 'Row one', 'Row three', 'Tail', 'Next page', 'New']])
+    check('지우기 대조: 지운 줄만 사라짐 + 사라진 쪽 번호 = 통과', F._removal_problems(s0, s1, ['Row two'], 1) == [])
+    check('지우기 대조: 쪽수가 안 줄었는데 숫자 줄이 사라짐 = 실패',
+          any('사라짐' in p for p in F._removal_problems(s0, s1, ['Row two'], 0)))
+    check('지우기 대조: 지운 곳 밖 글자(Tail) 사라짐 = 실패',
+          any('사라짐' in p for p in F._removal_problems(s0, s2, ['Row two'], 1)))
+    check('지우기 대조: 새로 생긴 글자 = 실패', any('새로 생긴' in p for p in F._removal_problems(s0, s3, ['Row two'], 1)))
+    check('지우기 대조: 결과 PDF 없음 = 못 잼 실패', F._removal_problems(s0, os.path.join(tmp, 'none.pdf'), ['x']) != [])
+    check('지우기 대조: 지운 조각 순서가 PDF 와 달라도 통과(제목+표)',
+          F._removal_problems(s0, pdf_of(os.path.join(tmp, 'r4.pdf'), [['Row one', 'Tail', 'Next page']]),
+                              ['Row twoRow three', 'Title'], 1) == [])
+
 # ── 9. (선택) 한컴 끝에서 끝 — Windows + 한컴 ───────────────────
 if os.environ.get('HWP_E2E') == '1':
     import fitz
@@ -356,6 +506,22 @@ if os.environ.get('HWP_E2E') == '1':
     F.convert(dupx, dup, dup[:-4] + '.pdf')
     check('E2E 포개진 도장(한컴 PDF)을 verify 가 잡음',
           any('겹침' in p for p in F.cmd_verify(dup[:-4] + '.pdf')))
+    # 표 줄 지우기 · 표 통째 지우기 — 실제 명령 그대로(.hwpx → .hwp + PDF + 쪽수 변화 + 글자 대조)
+    r1, r2 = os.path.join(tmp, 'rows.hwp'), os.path.join(tmp, 'tbl.hwp')
+    rc, o = run('delete-rows', S2, r1, '--table', '2', '--rows', '3-5', '--must-contain', '시험 줄 4')
+    check('E2E delete-rows 3줄 · 쪽수 변화 보고 · 글자 대조 통과',
+          rc == 0 and '쪽수 변화:' in o and '지운 표/줄 밖 글자는 원본과 같음' in o, o)
+    rc, o = run('delete-table', r1, r2, '--contains', '시험 줄 1 ', '--caption', '편 구성')
+    check('E2E delete-table + 제목 문단 · 쪽수 변화 보고 · 글자 대조 통과',
+          rc == 0 and '쪽수 변화:' in o and '지운 표/줄 밖 글자는 원본과 같음' in o, o)
+    if rc == 0:
+        t2 = re.sub(r'\s+', '', ''.join(p.get_text() for p in fitz.open(r2[:-4] + '.pdf')))
+        check('E2E 표 지운 PDF = 시험 줄·편 구성 없음 · 증빙 사진 남음',
+              '시험줄' not in t2 and '편구성' not in t2 and '증빙사진' in t2, t2[:80])
+    rc, o = run('delete-table', S2, os.path.join(tmp, 'x.hwp'), '--table', '5')
+    check('E2E delete-table 없는 표 = 실패(끝 코드 1)', rc == 1 and '없습니다' in o, o)
+    rc, o = run('delete-rows', S2, os.path.join(tmp, 'x.hwp'), '--table', '1', '--rows', '2-3')
+    check('E2E delete-rows 범위 밖 줄 = 실패(끝 코드 1)', rc == 1 and '없는 줄' in o, o)
 
 print('\n%s — 실패 %d건' % ('OK' if not fails else 'FAIL', len(fails)))
 sys.exit(1 if fails else 0)

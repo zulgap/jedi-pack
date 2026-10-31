@@ -14,7 +14,7 @@
 import os
 import re
 import zipfile
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, unescape
 
 SEC0 = 'Contents/section0.xml'
 SEC1 = 'Contents/section1.xml'
@@ -590,9 +590,11 @@ def char_color(header_xml, cid):
     return m.group(1).upper() if m else None
 
 
-def clone_char_pr(header_xml, base_id, color):
+def clone_char_pr(header_xml, base_id, color, plain=False):
     """서식 base_id 를 그대로 복제하되 글자색만 color 로 바꾼 새 서식을 만든다.
     (새 header, 새 번호) 를 돌려준다.
+    plain=True 면 기울임(<hh:italic/>)도 뺀다 — 양식의 파란 기울임 안내 글자를 채운 뒤
+    «본문 글자»로 돌릴 때(recolor). 굵게·밑줄은 그대로 둔다.
 
     🔴 「그 양식에 있는 아무 빨간 서식」 을 쓰지 말 것 — 크기·글꼴·자간이 달라 그 날짜만
     커지거나 줄이 밀린다. 바로 그 글자의 서식을 복제해 색만 바꾼다.
@@ -604,6 +606,8 @@ def clone_char_pr(header_xml, base_id, color):
     new_id = max(int(x) for x in re.findall(r'<hh:charPr id="(\d+)"', header_xml)) + 1
     node = re.sub(r'^<hh:charPr id="\d+"', '<hh:charPr id="%d"' % new_id, m.group(0))
     node = re.sub(r'textColor="[^"]*"', 'textColor="%s"' % color, node, count=1)
+    if plain:
+        node = re.sub(r'<hh:italic\s*/>', '', node)
     end = header_xml.find('</hh:charProperties>')
     if end < 0:
         raise ValueError('header 에 charProperties 가 없다')
@@ -614,7 +618,12 @@ def clone_char_pr(header_xml, base_id, color):
     return header_xml, str(new_id)
 
 
-def color_matches(xml, header_xml, pattern, color='#DC0000', clone_cache=None):
+def char_italic(header_xml, cid):
+    m = re.search(r'<hh:charPr id="%s"[^>]*>.*?</hh:charPr>' % re.escape(str(cid)), header_xml, re.S)
+    return bool(m and re.search(r'<hh:italic\s*/>', m.group(0)))
+
+
+def color_matches(xml, header_xml, pattern, color='#DC0000', clone_cache=None, plain=False):
     """pattern(정규식)에 맞는 글자만 떼어 color 로 칠한다.
     (xml, header, 칠한 글자 목록, 이미 그 색이던 글자 목록) 을 돌려준다.
 
@@ -634,12 +643,13 @@ def color_matches(xml, header_xml, pattern, color='#DC0000', clone_cache=None):
         texts = [p for p in parts if not p.startswith('<')]
         if base is None or not any(rx.search(p) for p in texts):
             continue
-        if char_color(header_xml, base) == color:
+        if char_color(header_xml, base) == color and not (plain and char_italic(header_xml, base)):
             already += [m.group(0) for p in texts for m in rx.finditer(p)]
             continue
-        if base not in clone_cache:
-            header_xml, clone_cache[base] = clone_char_pr(header_xml, base, color)
-        red = clone_cache[base]
+        key = (base, color, plain)
+        if key not in clone_cache:
+            header_xml, clone_cache[key] = clone_char_pr(header_xml, base, color, plain)
+        red = clone_cache[key]
         out, buf = [], ''
         for p in parts:
             if p.startswith('<'):
@@ -903,6 +913,121 @@ def split_table(xml, tbl_span, rows_per, header=1, page_break=False, start_id=No
 
 
 # ────────────────────────────────────────────────────────────
+# 문단 더하기 · 글자 표 만들기
+# ────────────────────────────────────────────────────────────
+
+def insert_paras_after(xml, anchor, lines):
+    """anchor 글자가 든 문단 «바로 뒤»에 그 문단과 같은 모양(문단·글자 서식) 문단을 줄마다 하나씩 끼운다.
+
+    🔴 anchor 가 든 문단이 정확히 1개가 아니면 멈춘다 — 엉뚱한 자리에 붙으면 조용히 틀린다.
+    `replace` 는 있는 문단의 글자만 바꿀 수 있어서, 줄을 «늘려야» 할 때 이것을 쓴다.
+    """
+    et = escape(anchor)
+    hits = [s for s, t in para_texts(xml).items() if et in t]
+    if len(hits) != 1:
+        raise ValueError('%r 가 든 문단이 %d개 — 정확히 1개여야 한다' % (anchor, len(hits)))
+    pa = hits[0]
+    pb = next(b for a, b in para_spans(xml) if a == pa)
+    popen = re.match(r'<hp:p\b[^>]*>', xml[pa:]).group(0)
+    popen = re.sub(r'\bid="\d+"', 'id="0"', popen, count=1)
+    popen = re.sub(r'pageBreak="\d"', 'pageBreak="0"', popen, count=1)
+    cp = next(n['char_pr'] for n in text_nodes(xml) if n['para'][0] == pa and n['char_pr'])
+    new = ''.join('%s<hp:run charPrIDRef="%s"><hp:t>%s</hp:t></hp:run><hp:linesegarray/></hp:p>'
+                  % (popen, cp, escape(ln)) for ln in lines)
+    return xml[:pb] + new + xml[pb:]
+
+
+def cell_style(xml, row, col, occurrence=0):
+    """그 칸의 모양 {border_fill, margin, para_pr, char_pr, valign, height} — 새 표 칸을 «이 양식의 칸 모양» 그대로.
+
+    🔴 서식 번호를 지어내지 않으려고 있다(함정 ②) — 칸 바탕색·테두리·글꼴을 양식 안 진짜 칸에서 빌린다.
+    """
+    _, _, _, a, b = _span_of(xml, row, col, occurrence)
+    tc = re.match(r'<hp:tc\b[^>]*>', xml[a:]).group(0)
+    tail = xml[b:xml.find('</hp:tc>', b)]
+    pp, cp = cell_formats(xml, row, col, occurrence)
+    va = re.search(r'vertAlign="(\w+)"', xml[a:b])
+    mg = re.search(r'<hp:cellMargin left="(\d+)" right="(\d+)" top="(\d+)" bottom="(\d+)"', tail)
+    sz = re.search(r'<hp:cellSz width="\d+" height="(\d+)"', tail)
+    return {'border_fill': re.search(r'borderFillIDRef="(\d+)"', tc).group(1),
+            'has_margin': re.search(r'hasMargin="(\d)"', tc).group(1),
+            'margin': mg.groups() if mg else ('510', '510', '141', '141'),
+            'para_pr': pp, 'char_pr': cp,
+            'valign': va.group(1) if va else 'CENTER',
+            'height': int(sz.group(1)) if sz else 2000}
+
+
+def text_table(rows, widths, styles, tbl_id, z, pos_xml, wrap='TOP_AND_BOTTOM', out_margin=None):
+    """글자 표 XML. rows = [[칸 글자, …], …] (칸 안 줄바꿈 = 문단) · widths = 열 폭 HWPUNIT ·
+    styles[행][열] = cell_style 결과. pos_xml = 그 표의 <hp:pos …/> (바꿀 그림 자리를 그대로 물려받는다)."""
+    ncol = len(widths)
+    if any(len(r) != ncol for r in rows):
+        raise ValueError('줄마다 칸 수가 %d개여야 한다' % ncol)
+    trs, total_h = [], 0
+    for ri, r in enumerate(rows):
+        rh = max(styles[ri][ci]['height'] for ci in range(ncol))
+        total_h += rh
+        tcs = []
+        for ci, txt in enumerate(r):
+            st = styles[ri][ci]
+            paras = ''.join(
+                '<hp:p id="0" paraPrIDRef="%s" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">'
+                '<hp:run charPrIDRef="%s">%s</hp:run><hp:linesegarray/></hp:p>'
+                % (st['para_pr'], st['char_pr'], ('<hp:t>%s</hp:t>' % escape(ln)) if ln else '')
+                for ln in str(txt).replace('\r\n', '\n').split('\n'))
+            tcs.append(
+                '<hp:tc name="" header="%d" hasMargin="%s" protect="0" editable="0" dirty="0" '
+                'borderFillIDRef="%s"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" '
+                'vertAlign="%s" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" '
+                'hasTextRef="0" hasNumRef="0">%s</hp:subList>'
+                '<hp:cellAddr colAddr="%d" rowAddr="%d"/><hp:cellSpan colSpan="1" rowSpan="1"/>'
+                '<hp:cellSz width="%d" height="%d"/>'
+                '<hp:cellMargin left="%s" right="%s" top="%s" bottom="%s"/></hp:tc>'
+                % ((1 if ri == 0 else 0, st['has_margin'], st['border_fill'], st['valign'], paras,
+                    ci, ri, widths[ci], rh) + tuple(st['margin'])))
+        trs.append('<hp:tr>%s</hp:tr>' % ''.join(tcs))
+    om = out_margin or '<hp:outMargin left="0" right="0" top="0" bottom="0"/>'
+    return ('<hp:tbl id="%d" zOrder="%d" numberingType="TABLE" textWrap="%s" '
+            'textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" '
+            'rowCnt="%d" colCnt="%d" cellSpacing="0" borderFillIDRef="%s" noAdjust="0">'
+            '<hp:sz width="%d" widthRelTo="ABSOLUTE" height="%d" heightRelTo="ABSOLUTE" protect="0"/>'
+            '%s%s<hp:inMargin left="510" right="510" top="141" bottom="141"/>%s</hp:tbl>'
+            % (tbl_id, z, wrap, len(rows), ncol, styles[0][0]['border_fill'],
+               sum(widths), total_h, pos_xml, om, ''.join(trs)))
+
+
+def replace_pic_with_table(xml, pic_key, rows, col_ratio, styles, tbl_id):
+    """그림 하나(그림 이름 또는 image 번호)를 같은 자리·같은 폭의 글자 표로 바꾼다.
+
+    그림의 <hp:pos>(자리)·zOrder·글 감싸기를 그대로 물려받아 문서의 다른 곳이 밀리지 않게 한다.
+    🔴 그림이 정확히 1개가 아니면 멈춘다.
+    """
+    hits = []
+    for p in pic_nodes(xml):
+        node = xml[p['start']:p['end']]
+        if p['name'] == pic_key or re.search(r'binaryItemIDRef="%s"' % re.escape(pic_key), node):
+            hits.append((p, node))
+    if len(hits) != 1:
+        raise ValueError('그림 %r 가 %d개 — 정확히 1개여야 한다' % (pic_key, len(hits)))
+    p, node = hits[0]
+    w = int(re.search(r'<hp:sz width="(\d+)"', node).group(1))
+    z = int(re.search(r'zOrder="(\d+)"', node).group(1))
+    wrap = re.search(r'textWrap="(\w+)"', node).group(1)
+    pos = re.search(r'<hp:pos\b[^>]*/>', node).group(0)
+    om = re.search(r'<hp:outMargin\b[^>]*/>', node)
+    tot = float(sum(col_ratio))
+    widths = [int(w * r / tot) for r in col_ratio]
+    widths[-1] = w - sum(widths[:-1])
+    tbl = text_table(rows, widths, styles, tbl_id, z, pos, wrap, om.group(0) if om else None)
+    out = xml[:p['start']] + tbl + xml[p['end']:]
+    pa, pb = p['para']
+    ls = _own_lineseg(out, (pa, pb + len(tbl) - len(node)))
+    if ls:
+        out = out[:ls[0]] + '<hp:linesegarray/>' + out[ls[1]:]
+    return out, w
+
+
+# ────────────────────────────────────────────────────────────
 # 그림 넣기 · 도장 · 그림 지우기
 # ────────────────────────────────────────────────────────────
 
@@ -989,6 +1114,148 @@ def delete_pics(xml, near, name=None):
     xml = _apply(xml, edits)
     xml = re.sub(r'<hp:run charPrIDRef="(\d+)"></hp:run>', r'<hp:run charPrIDRef="\1"/>', xml)
     return xml, gone
+
+
+# ────────────────────────────────────────────────────────────
+# 표 줄 지우기 · 표 통째 지우기
+# ────────────────────────────────────────────────────────────
+
+def parse_rows(spec):
+    """'8' · '3-5' · '2,4,6-7' → 정렬된 줄 번호 목록(0부터 — inspect 의 rN 과 같은 번호, 머리 줄 = 0)."""
+    out = set()
+    for part in str(spec).split(','):
+        part = part.strip()
+        m = re.fullmatch(r'(\d+)\s*(?:-\s*(\d+))?', part)
+        if not m:
+            raise ValueError('줄 번호는 「8」 · 「3-5」 · 「2,4」 모양: %r' % spec)
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        if hi < lo:
+            raise ValueError('범위가 거꾸로다: %r' % part)
+        out.update(range(lo, hi + 1))
+    if not out:
+        raise ValueError('지울 줄이 없다: %r' % spec)
+    return sorted(out)
+
+
+def table_row_texts(tbl):
+    """표 하나의 «자기» 행마다 글자 (칸 안 표 글자 포함 · 이스케이프 푼 것)."""
+    return [''.join(unescape(t) for t in para_texts(tbl[r0:r1]).values()) for r0, r1 in table_rows(tbl)]
+
+
+def delete_table_rows(xml, tbl_span, rows):
+    """표 하나에서 rows(0부터 줄 번호)를 지운다. (xml, 지운 줄 글자 목록).
+
+    남은 줄의 칸 주소(rowAddr)를 당기고 rowCnt·표 높이를 줄인 뒤 표를 담은 문단의 줄배치를 비운다(함정 ①).
+    🔴 세로로 합친 칸(rowSpan)이 지울 줄과 남길 줄에 걸치면 멈춘다 — 잘라 내면 칸이 깨진다.
+    🔴 줄을 전부 지우는 것은 거부한다 — 그건 표 통째 지우기(delete_table)다.
+    """
+    a, b = tbl_span
+    tbl = xml[a:b]
+    trs = table_rows(tbl)
+    n = len(trs)
+    bad = [r for r in rows if not 0 <= r < n]
+    if bad:
+        raise ValueError('없는 줄 %r — 이 표는 0~%d번 줄(%d줄, 머리 줄 = 0)' % (bad, n - 1, n))
+    drop = set(rows)
+    if len(drop) >= n:
+        raise ValueError('표의 줄 %d개를 전부 지우려 한다 — 표 통째 지우기(delete-table)를 쓸 것' % n)
+    cells = [_row_cells(tbl[r0:r1]) for r0, r1 in trs]
+    for i, cs in enumerate(cells):
+        for addr, span, _h in cs:
+            covered = set(range(addr, addr + span))
+            if span > 1 and covered & drop and covered - drop:
+                raise ValueError('%d행 칸이 %d~%d행에 합쳐져 있어 일부 줄만 지울 수 없다'
+                                 % (addr, addr, addr + span - 1))
+    texts = table_row_texts(tbl)
+    gone = [texts[r] for r in sorted(drop)]
+    gone_h = sum(max([h for _, _, h in cells[r]] or [0]) for r in drop)
+    body, removed = [], 0
+    for i, (r0, r1) in enumerate(trs):
+        if i in drop:
+            removed += 1
+            continue
+        body.append(_renumber_rows(tbl[r0:r1], -removed) if removed else tbl[r0:r1])
+    new = tbl[:trs[0][0]] + ''.join(body) + tbl[trs[-1][1]:]
+    new = re.sub(r'rowCnt="(\d+)"', lambda m: 'rowCnt="%d"' % (int(m.group(1)) - len(drop)), new, count=1)
+    new = re.sub(r'(<hp:sz width="\d+" widthRelTo="\w+" height=")(\d+)',
+                 lambda m: m.group(1) + str(max(int(m.group(2)) - gone_h, 0)), new, count=1)
+    out = xml[:a] + new + xml[b:]
+    pspan = para_of(para_spans(xml), a)
+    if pspan:
+        ls = _own_lineseg(out, (pspan[0], pspan[1] + len(new) - len(tbl)))
+        if ls:
+            out = out[:ls[0]] + '<hp:linesegarray/>' + out[ls[1]:]
+    return out, gone
+
+
+# 문단 안에 «글자 말고 다른 것»이 남았나 — 이 태그들만 남으면 빈 문단이다
+_BARE_PARA = re.compile(r'<hp:p\b[^>]*>|</hp:p>|<hp:run\b[^>]*?/>|<hp:run\b[^>]*>|</hp:run>'
+                        r'|<hp:t/>|<hp:t>|</hp:t>|<hp:linesegarray/>|<hp:linesegarray>.*?</hp:linesegarray>', re.S)
+
+
+def _has_objects(seg):
+    """문단에 글자 말고 다른 것(표·그림·구역 정의·탭 등)이 있나."""
+    return bool(_BARE_PARA.sub('', re.sub(r'<hp:t>[^<]*</hp:t>', '', seg)).strip())
+
+
+def _is_bare_para(seg):
+    """글자도 개체도 없는 문단인가."""
+    return not _has_objects(seg) and not re.search(r'<hp:t>[^<]*\S', seg)
+
+
+def delete_table(xml, tbl_span):
+    """표 하나를 통째로 지운다. (xml, 그 표의 글자, 문단째 지웠나).
+
+    표를 담은 문단에 표 말고 아무것도 없으면 **문단째** 지운다 — 표 자리만 비우면 빈 줄이 남아 쪽이 밀린다.
+    🔴 남기는 경우: ① 문단에 다른 글자·개체가 있음 ② 구역 첫 문단(쪽 설정 secPr 이 든다)
+       ③ 칸 안 표(칸에 문단이 0개가 되면 파일이 깨진다) — 그때는 표만 빼고 줄배치를 비운다.
+    """
+    a, b = tbl_span
+    text = ''.join(unescape(t) for t in para_texts(xml[a:b]).values())
+    spans = para_spans(xml)
+    pspan = para_of(spans, a)
+    if not pspan:
+        raise ValueError('표를 담은 문단을 못 찾았다')
+    pa, pb = pspan
+    nested = any(t0 < a and b < t1 for t0, t1 in tables(xml))
+    rest = xml[pa:a] + xml[b:pb]
+    if not nested and _is_bare_para(rest) and '<hp:secPr' not in rest:
+        return xml[:pa] + xml[pb:], text, True
+    out = xml[:a] + xml[b:]
+    out = re.sub(r'<hp:run charPrIDRef="(\d+)"></hp:run>', r'<hp:run charPrIDRef="\1"/>', out)
+    ls = _own_lineseg(out, (pa, pb - (b - a)))
+    if ls:
+        out = out[:ls[0]] + '<hp:linesegarray/>' + out[ls[1]:]
+    return out, text, False
+
+
+def delete_para_with_text(xml, text):
+    """글자 전체가 정확히 text 인 문단(표 밖 · 개체 없음) 하나를 지운다. (xml, 지운 글자).
+
+    표 제목(「입문 강의 장 구성 (17~20)」 같은)을 표와 함께 지울 때 쓴다.
+    🔴 정확히 1개가 아니면 멈춘다 — 같은 글자가 목차에도 있으면 엉뚱한 줄이 지워진다.
+    """
+    pa, pb = para_with_text(xml, text)
+    return xml[:pa] + xml[pb:], re.sub(r'\s+', ' ', text).strip()
+
+
+def para_with_text(xml, text):
+    """글자 전체가 정확히 text 인 문단(표 밖 · 개체 없음)의 (시작, 끝). 정확히 1개가 아니면 ValueError."""
+    want = re.sub(r'\s+', ' ', text).strip()
+    tb = tables(xml)
+    hits = []
+    for pa, pb in para_spans(xml):
+        if any(t0 < pa < t1 for t0, t1 in tb):
+            continue
+        seg = xml[pa:pb]
+        if '<hp:p ' in seg[1:] or '<hp:secPr' in seg:
+            continue
+        got = re.sub(r'\s+', ' ', ''.join(unescape(t) for t in para_texts(seg).values())).strip()
+        if got == want and not _has_objects(seg):
+            hits.append((pa, pb))
+    if len(hits) != 1:
+        raise ValueError('글자가 정확히 %r 인 문단이 %d개 — 정확히 1개여야 한다' % (text, len(hits)))
+    return hits[0]
 
 
 # ────────────────────────────────────────────────────────────
