@@ -13,7 +13,7 @@
   },
   "playwright": {
     "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.83"]
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.84"]
   },
   "jedi-work-chrome": {
     "command": "npx",

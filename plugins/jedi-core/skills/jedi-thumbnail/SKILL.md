@@ -15,7 +15,7 @@ requires:
   jedi_tools: [ext_generate_image]
   endpoints: ["/mcp/ext/render-thumbnail"]
   config: []
-version: 2.5.0
+version: 2.6.0
 origin: teampack
 ---
 
@@ -457,10 +457,23 @@ AI가 생성한 배경 인물에 `(결혼전문가)`를 붙이면 **그 사람�
   - 폴더 이름은 설치 형태에 따라 다르다: 팀팩 = `jedi-image` · 개인 = `이미지`. **형제 폴더를 확인하고 실제 이름을 쓸 것** (고정 이름을 박으면 다른 쪽에서 깨진다).
 - `ext_generate_image` `mode: "compose"` 또는 `"style_ref"` + `input_images: [{url, role}]` + `preserve_fidelity: true` 로 배경에 인물 합성.
 - **"제공 이미지만 사용" 제약이 있을 때도** 사용자가 명시적으로 허용하면 누끼·합성에 `compose` 모드를 써도 된다 (새 장면 생성이 아니라 **제공된 사진의 인물/배경 재구성**이므로). host 패널 크롭(34% 고정폭)으로 인물이 잘리면 **실패로 간주** — 크롭 대신 compose로 자연스럽게 합성할 것.
-#### 누끼(투명 PNG)로 인물을 얹어야 할 때 — 크로마키 (2026-08-27 신설)
+#### 누끼(투명 PNG)로 인물을 얹어야 할 때 — 공용 누끼 도구 (2026-11-02 · 모든 썸네일 스킬이 이 하나를 쓴다)
 
-배경 위에 인물을 **오려 붙인 컷아웃**으로 올리려면 투명 PNG 가 필요하다. 그런데 **팀원 PC 에는 배경제거
-라이브러리(rembg 등)가 없다.** 설치를 요구하지 말고 아래 2단계로 만든다.
+실제 사람 사진·촬영 원본이 있으면 **`<이 스킬 폴더>/scripts/person_cutout.py` 하나**로 딴다. 썸네일 스킬마다 따로 만들지 않는다.
+
+```bash
+python -X utf8 <이 스킬 폴더>/scripts/person_cutout.py --video <원본.mp4> --t <초> <누끼.png> --crop x0,y0,x1,y1 [--outline <비율>]
+python -X utf8 <이 스킬 폴더>/scripts/person_cutout.py --image <사진.png> <누끼.png> [--crop …] [--outline <비율>]
+```
+- 모델은 **birefnet-portrait 고정**(사람 전용 · 첫 실행 때 973MB 를 스스로 받는다) + 머리카락 가장자리 색 복원. 떨어진 덩어리(의자·쿠션)는 지운다
+- **흰 테두리는 이 도구가 두른다** — `--outline` = 누끼 높이 대비 두께(0 = 없음 · 모태 기본). 채널 파일이 켠 값만 쓴다(0.005 ≈ 화면 높이 620 에서 3px). 테두리를 둘렀으면 렌더에는 `--inset-outline 0` (두 번 그리지 않는다)
+- 아래 가장자리는 기본으로 서서히 지운다(`--fade-bottom 0.07`) · 화면 밖으로 잘린 쪽은 `--fade-right`·`--fade-left`
+- 필요: 파이썬 + `rembg` · `pymatting` · `opencv` · `scipy` · `ffmpeg`. 시험 `scripts/_test-person-cutout.py`(지난 반려 5종 + 두께 비례)
+
+#### 누끼 도구를 못 쓸 때 — 크로마키 (2026-08-27 신설)
+
+배경 위에 인물을 **오려 붙인 컷아웃**으로 올리려면 투명 PNG 가 필요하다. **그 PC 에 배경제거
+라이브러리(rembg 등)가 없거나 원본 사진 없이 AI 인물을 쓸 때**는 설치를 요구하지 말고 아래 2단계로 만든다.
 
 1. `ext_generate_image` `mode: "edit"` + `preserve_fidelity: true` 로 **배경만 순수 녹색**으로 바꾼다.
    프롬프트에 이 두 문장을 반드시 넣을 것 —
@@ -612,7 +625,7 @@ node <이 스킬 폴더>/scripts/compose-thumbnail.mjs \
 - **고객이 AI 의견을 가져오면** 그대로 받지 않는다 — 왜 그렇게 했는지를 영상 원문(시각 포함)을 근거로 먼저 설명하고, 맞는 지적만 반영한다. 고객에게 보낼 문안은 인용 줄 없이 평문으로(그대로 복사해 쓴다)
 
 **기술 함정**
-- **누끼** — 그 PC 에 `rembg` 가 있으면 `birefnet-portrait` + pymatting `estimate_foreground_ml`(머리카락 흰 번짐 제거)을 우선한다. `isnet-general-use` 는 의자가 같이 잘리고 경계가 계단처럼 깨져 되돌려졌다. 🔴 **`rembg` 가 없는 PC 는 위 § 5-2 «크로마키» 경로를 그대로 쓴다** — 설치를 요구하지 않는다
+- **누끼** — 그 PC 에 `rembg` 가 있으면 공용 누끼 도구 `scripts/person_cutout.py`(`birefnet-portrait` + pymatting `estimate_foreground_ml` — 머리카락 흰 번짐 제거)를 쓴다. `isnet-general-use` 는 의자가 같이 잘리고 경계가 계단처럼 깨져 되돌려졌다. 🔴 **`rembg` 가 없는 PC 는 위 § 5-2 «크로마키» 경로를 그대로 쓴다** — 설치를 요구하지 않는다
 - **렌더 순서** — `compose-thumbnail.mjs` 의 `--inset` 은 글자 «위»에 그려진다 → 인물을 먼저 얹은 판을 `--bg` 로 넘겨 **2단계로** 렌더하거나 로컬에서 합성한다
 - **보정** — 가장자리 보존 블러를 약하게 섞기 → 반사광 누르기 → 노출·S커브 → 색감은 거의 그대로(따뜻하게 하면 피부가 붉어진다) → 선명도
 - **인물 흰 테두리는 채널 슬롯** — 어떤 채널은 「붙여넣은 티」로 되돌렸고 다른 채널은 확정했다. 모태 기본은 «없음»
