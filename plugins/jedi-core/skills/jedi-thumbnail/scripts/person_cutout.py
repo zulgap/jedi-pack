@@ -66,18 +66,21 @@ def fade_edges(rgba, bottom=0.07, right=0.0, left=0.0):
     return rgba
 
 
-def add_outline(rgba, ratio, color=(255, 255, 255)):
-    """사람 둘레에 테두리를 두른다. 두께 = 누끼 높이 × ratio. 그림이 잘리지 않게 그만큼 여백을 붙인다."""
+def add_outline(rgba, ratio, color=(255, 255, 255), px=None, blur=None):
+    """사람 둘레에 테두리를 두른다. 두께 = 누끼 높이 × ratio (또는 px 로 화소를 직접 — 최종 크기에서 두를 때).
+    그림이 잘리지 않게 사방에 두께 × 2 만큼 여백을 붙인다(부른 쪽은 자리를 그만큼 왼쪽·위로 옮긴다)."""
     import cv2
-    if ratio <= 0:
+    if px:
+        ow = int(px)
+    elif ratio > 0:
+        ow = max(1, int(round(rgba.shape[0] * ratio)))
+    else:
         return rgba
-    H = rgba.shape[0]
-    ow = max(1, int(round(H * ratio)))
     p = ow * 2
     rgba = np.pad(rgba, ((p, p), (p, p), (0, 0)))
     a = rgba[:, :, 3]
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ow * 2 + 1, ow * 2 + 1))
-    ring = cv2.GaussianBlur(cv2.dilate(a, k), (0, 0), max(0.8, ow * 0.1)).astype(np.float32) / 255
+    ring = cv2.GaussianBlur(cv2.dilate(a, k), (0, 0), blur or max(0.8, ow * 0.1)).astype(np.float32) / 255
     fa = a.astype(np.float32) / 255
     out_a = fa + ring * (1 - fa)                      # 사람 위에 테두리를 «뒤에서» 깐다
     col = np.array(color, dtype=np.float32)

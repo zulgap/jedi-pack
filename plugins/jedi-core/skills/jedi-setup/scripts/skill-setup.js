@@ -132,8 +132,11 @@ function versionOk(ver, cond) {
  * @AI:CONSTRAINT 울타리 — 무늬는 `_test` 로 시작하는 이름 글자와 `*` 만(경로 구분자·.. 불가) · 그 스킬 폴더 밖 파일은 못 고른다
  */
 function testPattern(match) {
-  const m = match === undefined || match === null || match === '' ? '_test*' : String(match);
+  let m = match === undefined || match === null || match === '' ? '_test*' : String(match);
   if (!/^_test[A-Za-z0-9._*-]{0,60}$/.test(m)) return null;
+  // @AI:INTENT `*` 도 확장자(.js·.py)도 없는 무늬(예: "_test")는 «이 글자로 시작하는 시험»으로 읽는다 —
+  //   정확히 그 이름만 찾으면 시험 0개(no_tests)라 셋업이 영원히 «준비 안 됨»이 된다(11/2 고객사 편집 스킬 계획 1판 실사고).
+  if (!m.includes('*') && !/\.(js|py)$/.test(m)) m += '*';
   const body = m.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\-]/g, '\\$&')).join('[A-Za-z0-9._-]*');
   return new RegExp(`^${body}$`);
 }
@@ -381,8 +384,14 @@ const HANDLERS = {
         if (!spec || !spec[2]) return { state: 'ok' };
         // 판 읽기 — 배포 이름(pip 이름)으로. 이름은 위 모양 검사를 지난 글자만이라 코드 조각에 그대로 넣어도 된다
         const v = c.run(py, ['-c', `import importlib.metadata as m; print(m.version('${spec[1]}'))`], { encoding: 'utf8', timeout: 20000 });
-        const ver = String(v.stdout || '').trim();
-        if (v.status !== 0 || !ver) return { state: 'missing', code: 'python_version_unknown', note: hint };
+        let ver = v.status === 0 ? String(v.stdout || '').trim() : '';
+        // @AI:INTENT 같은 모듈을 다른 배포 이름으로 깐 PC(예: cv2 = opencv-python-headless)는 pip 이름으로 판을 못 읽는다 —
+        //   불러오기는 됐으니 모듈 자기 판(__version__)으로 한 번 더 본다(11/2 고객사 편집 스킬 셋업 검증에서 «판 모름» 거짓 실패).
+        if (!ver) {
+          const mv = c.run(py, ['-c', `import ${String(a.python_import).replace(/[^A-Za-z0-9_.]/g, '')} as _m; print(getattr(_m, '__version__', ''))`], { encoding: 'utf8', timeout: 20000 });
+          ver = mv.status === 0 ? String(mv.stdout || '').trim() : '';
+        }
+        if (!ver) return { state: 'missing', code: 'python_version_unknown', note: hint };
         return versionOk(ver, spec[2]) ? { state: 'ok', code: 'version_ok', note: ver } : { state: 'missing', code: 'python_version_mismatch', note: `${ver} 깔림 → ${hint}` };
       }
       return { state: 'missing', code: 'python_module_missing', note: hint };
@@ -611,8 +620,14 @@ function selftest() {
       // pip 판 조건 — 깔린 판이 조건 밖이면 missing + 설치 안내(따옴표) · 안이면 ok
       const vRun = (ver) => (cmd, args) => ({ status: cmd === 'python' ? 0 : 1, stdout: /metadata/.test(args[1] || '') ? ver + '\n' : '', stderr: '' });
       const pPlan = { steps: [{ id: 'p', kind: 'tool', who: 'code', args: { python_import: 'PIL', pip: 'pillow<13' } }, { id: 'q', kind: 'tool', who: 'code', args: { python_import: 'PIL', pip: 'pillow && del' } }] };
-      return Promise.all([runPlan(pPlan, { home: path.join(tmp, 'home4'), run: vRun('13.0.0'), roots: [] }), runPlan(pPlan, { home: path.join(tmp, 'home4'), run: vRun('12.1.1'), roots: [] })]);
-    }).then(([bad13, ok12]) => {
+      // 🔴 배포 이름이 다른 판(cv2 = opencv-python-headless) — pip 이름으로 판을 못 읽으면 모듈 __version__ 으로(11/2)
+      const hRun = (modVer) => (cmd, args) => ({ status: cmd !== 'python' ? 1 : (/metadata/.test(args[1] || '') ? 1 : 0), stdout: /__version__/.test(args[1] || '') ? modVer + '\n' : '', stderr: '' });
+      const cvPlan = { steps: [{ id: 'cv', kind: 'tool', who: 'code', args: { python_import: 'cv2', pip: 'opencv-python<5' } }] };
+      return Promise.all([runPlan(pPlan, { home: path.join(tmp, 'home4'), run: vRun('13.0.0'), roots: [] }), runPlan(pPlan, { home: path.join(tmp, 'home4'), run: vRun('12.1.1'), roots: [] }),
+        runPlan(cvPlan, { home: path.join(tmp, 'home4'), run: hRun('4.13.0'), roots: [] }), runPlan(cvPlan, { home: path.join(tmp, 'home4'), run: hRun(''), roots: [] })]);
+    }).then(([bad13, ok12, cvOk, cvNone]) => {
+      cases.push(['🔴 배포 이름이 달라도(headless) 모듈 판 4.13 으로 ok · 판도 못 읽으면 python_version_unknown', cvOk[0].state === 'ok' && cvOk[0].note === '4.13.0' && cvNone[0].code === 'python_version_unknown']);
+      cases.push(['🔴 무늬 "_test"(별·확장자 없음) = "_test*" 로 읽는다 · 정확한 이름(.py)은 그것만', testPattern('_test').test('_test-subs2.py') && testPattern('_test-a.py').test('_test-a.py') && !testPattern('_test-a.py').test('_test-ab.py') && testPattern('_test-none*').test('_test-none.js')]);
       cases.push(['🔴 pip 판 조건 — 13 깔림 + 「<13」 = missing · 안내에 따옴표', bad13[0].state === 'missing' && bad13[0].code === 'python_version_mismatch' && bad13[0].note === '13.0.0 깔림 → pip install "pillow<13"' && bad13[1].code === 'bad_args']);
       cases.push(['pip 판 조건 — 12 깔림 = ok', ok12[0].state === 'ok' && ok12[0].code === 'version_ok']);
       // 🔴 node 처럼 `-version` 을 거부하고 `--version` 만 받는 프로그램(10/29 교수님 맥 오경보) — 인자 미지정이면 둘 다 본다 · 지정하면 그것만

@@ -49,6 +49,14 @@ ok(1.6 < grow2 / max(grow1, 1) < 2.4, f'6 두께가 크기에 비례한다(여�
 # 7. 아래 가장자리 서서히 지우기 — 맨 아래 줄이 맨 위 몸통보다 투명
 r3 = cutout_rgb(rgb, mask_fn=lambda x: mask, fade=(0.2, 0, 0), outline=0)
 ok(r3[-1, :, 3].max() < r3[r3.shape[0] // 2, :, 3].max(), '7 아래 가장자리를 서서히 지운다')
+# 8. 얼굴 보정식 고정 — 고객사 채널 확정본(10/12)이 이 식으로 나갔다. 바꾸려면 사람 확인 뒤 지문을 새로 적을 것
+import hashlib
+from person_cutout import enhance_rgb, add_outline
+rs = np.random.default_rng(1).integers(0, 255, (64, 48, 3), dtype=np.uint8)
+ok(hashlib.sha1(enhance_rgb(rs).tobytes()).hexdigest()[:16] == 'ff49b7819d3257a1', '8 얼굴 보정식이 확정본과 같다(지문 고정)')
+# 9. 화소로 두르기(px) — 최종 크기에서 두를 때 사방 여백 = 두께 × 2
+px = add_outline(r0, 0, px=10)
+ok(px.shape[0] == r0.shape[0] + 40 and px.shape[1] == r0.shape[1] + 40, '9 px 로 두르면 사방에 두께×2 여백')
 
 print(f'\n{"전부 통과" if not fails else str(len(fails)) + "건 실패"}')
 sys.exit(1 if fails else 0)
