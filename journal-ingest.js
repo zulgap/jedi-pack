@@ -11,7 +11,8 @@
 //   … --whys-file <why.json>  「왜」 번호+구절(collect-prompts.js --why-pick 이 만든 파일 · 선택)
 //   … --object <객체 uuid> [--object-alias "<본문 속 이름>"]  이 저널의 대상 객체(선택 · 2026-10-06)
 //   … --object-none "<이유 한 줄>"  묶을 대상이 정말 없다고 사람이 정했다(2026-10-15 · 판단OS #4818)
-//   … --project <섹션 uuid> [--scope <관리번호 uuid>]  어느 섹션·관리번호 일인가(선택 · 2026-10-10)
+//   … --project <섹션 uuid> [--scope <관리번호 uuid>]  어느 섹션·관리번호 일인가(2026-10-10)
+//   … --project-none "<이유>"  맞는 섹션이 없는 일이라고 사람이 확인했다(2026-11-05) — 둘 중 하나는 반드시
 //   … --nature dev|partner|scm|brand|client|other  이 일의 성격(2026-10-17 · 판단OS #4929) — 브랜드 이름보다 먼저 정한다
 //   … --dry-run   보내지 않고 조립 결과만 찍는다(네트워크·토큰 0)
 //
@@ -73,9 +74,9 @@ const CONTENT_CAP = 8000;
 // 「어디서 이어받나」를 담는 섹션. 5단락의 마지막이라 그냥 이어붙이면 가장 먼저 잘린다.
 const PRIORITY_HEADING_RE = /^##\s*.*(미해결|다음|잔여)/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business']);
+const FLAGS_WITH_VALUE = new Set(['--body-file', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--project-none','--scope', '--nature', '--business']);
 // 🔴 아는 플래그만 플래그로 본다 — 「--」로 시작하는 요약 문장도 옛 판처럼 위치 인자로 남아야 바이트 동일이다.
-const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--scope', '--nature', '--business', '--folder-ok']);
+const KNOWN_FLAGS = new Set(['--body-file', '--no-notion', '--dry-run', '--whys-file', '--object', '--object-alias', '--object-none', '--project', '--project-none','--scope', '--nature', '--business', '--folder-ok']);
 // @AI:DEPENDS 서버 shared/journal-nature.js 의 성격 6개 — 서버가 받는 값과 같아야 한다(판단OS #4929)
 const NATURE_KEYS = ['dev', 'partner', 'scm', 'brand', 'client', 'other'];
 // 누구의 사업 이름표 — 모양만 본다. 어떤 이름표가 있는지는 서버 한 곳이 정한다(모르는 값이면 422 business_invalid 로 멈춘다).
@@ -98,6 +99,10 @@ const GATE_EXIT = 3;
 // 관문을 켜는 표식 — 설치된 jedi-save / wrapup-dev 문구에 이 낱말이 있으면 «규칙을 아는 PC»다.
 const GATE_MARKER = '--object-none';
 const NATURE_GATE_MARKER = '--nature';
+// @AI:INTENT 섹션 관문(2026-11-05 사장님 승인) — 팀원 저널 14일 151건 중 58건이 섹션 없이 들어갔고 왜 비었는지 기록이 없었다.
+//   «섹션 또는 없는 이유»를 받아 빈칸의 이유가 남게 한다.
+const PROJECT_GATE_MARKER = '--project-none';
+const MAX_PROJECT_NONE_REASON = 200;
 const GATE_SKILLS = [['jedi-core@', 'jedi-save'], ['dev-pack@', 'wrapup-dev']];
 
 /**
@@ -124,6 +129,19 @@ function natureGateMessage(argv) {
 }
 
 /**
+ * 섹션 관문 문구 — 통과면 null. 순수 함수(검사용). --project 또는 --project-none 이 있거나 --dry-run 이면 통과.
+ */
+function projectGateMessage(argv) {
+  if (argv.includes('--project') || argv.includes('--project-none') || argv.includes('--dry-run')) return null;
+  return [
+    'journal-ingest: 🔴 어느 섹션 일인지 정하는 단계를 건너뛰었습니다 — 저장하지 않고 멈춥니다.',
+    '  1) 찾기: list_projects 로 사용 중인 섹션을 보고 이번 일에 맞는 것을 고른다',
+    '  2) 있으면: 같은 명령 끝에 --project <섹션 id> (맞는 칸이 있으면 --scope <관리번호 id>)',
+    '  3) 맞는 섹션이 정말 없으면: --project-none "<이유 한 줄>" (예: "회사 내부 일" · "맞는 섹션 없음: <이름>" · "도구 오류")',
+  ];
+}
+
+/**
  * 이 PC 에 «대상 규칙을 아는» jedi-save(또는 wrapup-dev)가 설치돼 있나. 설치 장부(installed_plugins.json)의
  * 설치 폴더에서 스킬 문구를 읽어 표식을 찾는다. 못 읽으면 false(= 막지 않음 — 위 @AI:DEPENDS).
  * env JOURNAL_OBJECT_GATE=on|off 가 있으면 그 값(검사·비상 끄기용).
@@ -135,6 +153,11 @@ function objectGateActive(deps = {}) {
 /** 일의 성격 관문 켜짐 — 설치된 jedi-save/wrapup-dev 문구에 '--nature' 가 있을 때만. env JOURNAL_NATURE_GATE=on|off. */
 function natureGateActive(deps = {}) {
   return skillGateActive(deps, NATURE_GATE_MARKER, 'JOURNAL_NATURE_GATE');
+}
+
+/** 섹션 관문 켜짐 — 설치된 jedi-save/wrapup-dev 문구에 '--project-none' 이 있을 때만. env JOURNAL_PROJECT_GATE=on|off. */
+function projectGateActive(deps = {}) {
+  return skillGateActive(deps, PROJECT_GATE_MARKER, 'JOURNAL_PROJECT_GATE');
 }
 
 function skillGateActive(deps, marker, envKey) {
@@ -199,6 +222,7 @@ function buildRequest(argv, deps = {}) {
         // 🔴 값 없이 플래그만 오면 멈춘다 — 조용히 무시하면 「묶였다」고 믿는다
         if (!v || v.startsWith('--')) {
           if (a === '--object-none') return { ok: false, error: '--object-none 뒤에 이유가 없습니다(예: "회사 내부 일" · "이름표 없음: <이름>")' };
+          if (a === '--project-none') return { ok: false, gate: true, error: '--project-none 뒤에 이유가 없습니다 — 저장하지 않고 멈춥니다(예: "회사 내부 일" · "맞는 섹션 없음: <이름>")' };
           if (a === '--nature') {
             if (argv.includes('--dry-run')) { flags[a] = ''; continue; }
             return { ok: false, gate: true, error: ['--nature 뒤에 일의 성격이 없습니다 — 저장하지 않고 멈춥니다.', ...NATURE_GUIDE].join('\n') };
@@ -285,6 +309,12 @@ function buildRequest(argv, deps = {}) {
   //   관리번호»인지 확인하고 붙인다(아니면 무시 — 관리번호는 빈칸). 여기서는 모양만 본다(fail-closed).
   let projectId = null;
   let scopeId = null;
+  let projectNoneReason = '';
+  if (flags['--project-none']) {
+    if (flags['--project'] || flags['--scope']) return { ok: false, gate: true, error: '--project-none 은 --project·--scope 와 함께 쓰지 않습니다 — 섹션이 있으면 --project 만' };
+    projectNoneReason = String(flags['--project-none']).trim().slice(0, MAX_PROJECT_NONE_REASON);
+    if (!projectNoneReason) return { ok: false, gate: true, error: '--project-none 뒤에 이유가 없습니다 — 저장하지 않고 멈춥니다(예: "회사 내부 일" · "맞는 섹션 없음: <이름>")' };
+  }
   if (flags['--project']) {
     if (!UUID_RE.test(flags['--project'])) return { ok: false, error: `--project 값이 섹션 번호(uuid) 형식이 아닙니다: ${flags['--project']}` };
     projectId = flags['--project'].toLowerCase();
@@ -323,6 +353,8 @@ function buildRequest(argv, deps = {}) {
   if (objectNoneReason) { obj.object_none = true; obj.object_none_reason = objectNoneReason; }
   if (projectId) obj.project_id = projectId;
   if (scopeId) obj.scope_id = scopeId;
+  // @AI:DEPENDS 서버 journal-ingest 가 metadata.project_none_reason 으로 남긴다. 옛 서버는 모르는 키를 무시한다.
+  if (projectNoneReason) obj.project_none_reason = projectNoneReason;
   if (workNature) obj.work_nature = workNature;
   if (workBusiness) obj.work_business = workBusiness;
   // 같은 고객 섹션 여럿 관문 (2026-10-26 · 판단OS #5313) — 섹션을 골랐으면 서버가 형제 섹션을 확인하게 한다.
@@ -336,7 +368,7 @@ function buildRequest(argv, deps = {}) {
     willTruncate: projected.length > CONTENT_CAP,
     hoistedLength,
     whys, whysWarning,
-    objectId, objectAlias, objectNoneReason, projectId, scopeId, workNature, natureWarning, workBusiness, sessionUuid,
+    objectId, objectAlias, objectNoneReason, projectId, scopeId, projectNoneReason, workNature, natureWarning, workBusiness, sessionUuid,
     payload,
   };
 }
@@ -363,7 +395,7 @@ function main() {
   const noNotionArg = process.argv.includes('--no-notion');
   if (!r.ok) {
     if (r.usage) {
-      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] (--object <uuid> [--object-alias <name>] | --object-none "<이유>") [--project <uuid> [--scope <uuid>]] --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>] [--no-notion] [--dry-run]');
+      console.error('usage: node journal-ingest.js "<notion_page_id|new>" "<title>" "<summary>" [--body-file <path>] [--whys-file <path>] (--object <uuid> [--object-alias <name>] | --object-none "<이유>") (--project <uuid> [--scope <uuid>] | --project-none "<이유>") --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>] [--no-notion] [--dry-run]');
     } else {
       console.error(`journal-ingest: ${r.error}`);
     }
@@ -382,11 +414,14 @@ function main() {
   }
   const ngate = natureGateMessage(process.argv.slice(2));
   if (ngate && natureGateActive()) stops.push(ngate.join('\n'));
+  const pgate = projectGateMessage(process.argv.slice(2));
+  if (pgate && projectGateActive()) stops.push(pgate.join('\n'));
   if (stops.length) {
     console.error(stops.join('\n'));
     process.exit(GATE_EXIT);
   }
   if (r.objectNoneReason) console.log(`journal-ingest: 대상 없음 — ${r.objectNoneReason}`);
+  if (r.projectNoneReason) console.log(`journal-ingest: 섹션 없음 — ${r.projectNoneReason}`);
   if (r.workNature) console.log(`journal-ingest: 일의 성격 — ${r.workNature}`);
   if (r.workBusiness) console.log(`journal-ingest: 누구의 사업 — ${r.workBusiness}`);
   if (r.natureWarning) console.log(`journal-ingest: ⚠️ ${r.natureWarning}`);
@@ -419,7 +454,7 @@ function main() {
     failed = true;
     if (r.noNotion) {
       console.log(`journal-ingest: ❌ 저장되지 않았습니다 — ${msg}`);
-      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}${r.objectNoneReason ? ` --object-none ${JSON.stringify(r.objectNoneReason)}` : ''}${r.projectId ? ` --project ${r.projectId}` : ''}${r.scopeId ? ` --scope ${r.scopeId}` : ''}${r.workNature ? ` --nature ${r.workNature}` : ''}${r.workBusiness ? ` --business ${r.workBusiness}` : ''}`);
+      console.log(`   다시 보내려면: node journal-ingest.js ${r.sourceId} "<제목>" "<한줄 요약>" --body-file <같은 파일> --no-notion${r.objectId ? ` --object ${r.objectId}` : ''}${r.objectNoneReason ? ` --object-none ${JSON.stringify(r.objectNoneReason)}` : ''}${r.projectId ? ` --project ${r.projectId}` : ''}${r.scopeId ? ` --scope ${r.scopeId}` : ''}${r.projectNoneReason ? ` --project-none ${JSON.stringify(r.projectNoneReason)}` : ''}${r.workNature ? ` --nature ${r.workNature}` : ''}${r.workBusiness ? ` --business ${r.workBusiness}` : ''}`);
       process.exitCode = 1;
     } else {
       console.log(`journal-ingest: ⚠️ ${msg}${tail}`);
@@ -512,5 +547,5 @@ function main() {
   req.end();
 }
 
-module.exports = { buildRequest, hoistPrioritySection, objectGateMessage, objectGateActive, natureGateMessage, natureGateActive, NATURE_KEYS, CONTENT_CAP };
+module.exports = { buildRequest, hoistPrioritySection, objectGateMessage, objectGateActive, natureGateMessage, natureGateActive, projectGateMessage, projectGateActive, NATURE_KEYS, CONTENT_CAP };
 if (require.main === module) main();

@@ -1,7 +1,7 @@
 ---
 name: jedi-save
 description: 이번 작업(세션)의 프롬프트를 자동 수집하고, 맥락을 노션 "팀 세션 저널" DB에 표준 5단락으로 1행 기록(노션을 쓰지 않는 회사는 서버에 바로 저장 — 미니앱에서 본다). 작업이 미완료면 다음 세션용 핸드오프 프롬퍼도 자동 작성. "/jedi-save", "/저장", "저장해줘", "세션 기록", "오늘 작업 정리", "마무리해줘", "다음에 이어서" 처럼 작업 종료 시 명시적으로 호출.
-version: 1.7.0
+version: 1.8.0
 origin: teampack
 tier: shared
 ---
@@ -194,17 +194,25 @@ node "<이 스킬 디렉토리>/collect-prompts.js" --why-pick '[{"n":12,"reason
 
 ### 순서
 
-1. 이번 작업이 **누구(어느 고객사·브랜드·채널)를 위한 일**이었나를 대화에서 정한다. 회사 내부 일이거나 여러 곳에 걸치면 → **이 절을 건너뛴다**(저장은 그대로 · 단 위 0번 `--nature` 는 그래도 붙인다).
+> 🔴 **2026-11-05 개정 — 건너뛰기 없음.** `--project` 아니면 `--project-none "<이유>"` **둘 중 하나는 반드시** 붙인다(빠지면 종료코드 3 · 저장 안 됨).
+> 왜: 최근 14일 팀원 기록 151건 중 58건이 섹션 없이 들어갔고, 표본 30건을 제목으로 보니 약 20건이 고객 일이었다. 왜 비었는지도 남지 않았다.
+
+1. 이번 작업이 **누구(어느 고객사·브랜드·채널)를 위한 일**이었나를 대화에서 정한다.
+   - 회사 내부 일이면 → 2번에서 맞는 내부 섹션을 찾고, 없을 때만 `--project-none "회사 내부 일"`.
+   - 여러 고객사에 걸치면 → **고객사마다 일지를 나눠** 저장한다(아래 § 프로젝트 단계 갱신 0번). 한 일지로 묶지 않는다.
 2. `mcp__jedi__list_projects` 로 섹션을 찾는다.
    - 🔴 **상태가 «사용 중»(ACTIVE)인 것만** 고른다. 보관된(ARCHIVED) 섹션은 서버도 받지 않는다.
    - 🔴 **이름이 같은 섹션이 둘 이상이면** 이름이 아니라 **상태와 설명**으로 가른다(이번 사고가 바로 이것).
 3. `mcp__jedi__list_scopes{project_id}` 로 그 안의 관리번호를 본다. **사용 중**이고 **소개(description)가 이번 일과 맞는 것 «하나»**만 고른다.
    - 이름만 보고 고르지 않는다. 소개가 비어 있거나 맞는 칸이 없으면 **관리번호 없이** 섹션만 넣는다.
    - 「일반 판단」(GENERAL) 같은 «아무거나 담는 칸»으로 떨어뜨리지 않는다. 맞는 칸이 없으면 빈칸이 정답이다.
+   - **맞는 칸이 없고 같은 종류의 일이 또 있을 것 같으면** 칸을 제안한다 — `mcp__jedi__edit_scope{action:"add", target_project_id, name:"[종류] 이름", intro}` 를 `confirm_token` 없이 불러 미리보기만 받고(아무것도 안 써진다), 아래 확인 문구에 「🏷 맞는 칸이 없어요 — 「[종류] 이름」 칸을 만들까요?」 한 줄로 함께 묻는다. 🔴 만드는 것은 사람이 「네」 한 뒤에만(같은 인자 + `confirm_token`). 한 번뿐인 일이면 제안하지 않는다.
+     - 「아니요」면 칸 없이 저장. 권한이 없다고 오면(섹션 담당자만 만들 수 있다) 칸 없이 저장하고 «미해결 · 다음»에 `⬜ 담당자에게 「[종류] 이름」 칸 요청` 한 줄.
 4. **사람에게 한 번 확인한다** — 아래 «확인 문구» 틀 그대로. AskUserQuestion 이 있으면 보기 3개(맞아요 / 다른 곳이에요 / 칸 없이 저장)로.
    - 「다른 곳이에요」면 어느 고객·일이었는지 **한마디만** 다시 물어 2~3을 다시 한다. 목록을 통째로 보여 주지 않는다.
 5. 저장 명령 끝에 `--project <섹션 id>` 와 (골랐으면) `--scope <관리번호 id>` 를 붙인다. `--scope` 만 단독으로 쓰지 않는다.
-6. 도구가 없거나 오류면 이 절을 건너뛰고 저장은 그대로 한다. «미해결 · 다음»에 `⬜ 어느 섹션 일인지 못 정함 — 관리자에게` 한 줄.
+   - 맞는 섹션이 없으면 `--project-none "<이유 한 줄>"` — 확인 문구의 📁 줄에 「없음 — <이유>」를 보여 드리고 「네」를 받은 뒤에만. 이유는 사실 그대로(「회사 내부 일」 · 「맞는 섹션 없음: <이름>」).
+6. 도구가 없거나 오류면 찾기를 멈추고 `--project-none "도구 오류"` 로 저장한다. «미해결 · 다음»에 `⬜ 어느 섹션 일인지 못 정함 — 관리자에게` 한 줄.
 
 ### 확인 문구 (팀원 화면에 이 틀 그대로)
 
@@ -365,7 +373,7 @@ f="$HOME/.claude/zulgap/teampack-config.js"; [ -f "$f" ] || f="$HOME/.claude/plu
 
 ② **서버에 저장** (Bash, 딱 1회):
 ```
-f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" new "<세션 제목>" "<한줄 요약>" --body-file "<①의 파일>" --no-notion [--whys-file "<「왜」 파일>"] (--object <이름표 id> [--object-alias "<이름>"] | --object-none "<이유>") [--project <섹션 id> [--scope <관리번호 id>]] --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>]
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" new "<세션 제목>" "<한줄 요약>" --body-file "<①의 파일>" --no-notion [--whys-file "<「왜」 파일>"] (--object <이름표 id> [--object-alias "<이름>"] | --object-none "<이유>") (--project <섹션 id> [--scope <관리번호 id>] | --project-none "<이유>") --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>]
 ```
 - `--whys-file` 은 § 「왜」 고르기에서 1개 이상 골랐을 때만 붙인다. 파일이 깨져도 저널은 그대로 저장된다.
 - 🔴 `--object` 또는 `--object-none "<이유>"` 중 **하나는 반드시** — § 대상 고르기. 빠지면 종료코드 3 으로 멈춘다(저장 안 됨 · 붙여서 다시).
@@ -470,7 +478,7 @@ diff -u sent.md got.md          # 다르면 그 줄이 통째로 나온다. 오�
 🔴 **노션에만 쌓으면 나중에 검색이 안 된다.** 적재 응답의 **page id**로 아래를 실행:
 
 ```
-f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<세션 제목>" "<한줄 요약>" [--whys-file "<「왜」 파일>"] (--object <이름표 id> [--object-alias "<이름>"] | --object-none "<이유>") [--project <섹션 id> [--scope <관리번호 id>]] --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>]
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<세션 제목>" "<한줄 요약>" [--whys-file "<「왜」 파일>"] (--object <이름표 id> [--object-alias "<이름>"] | --object-none "<이유>") (--project <섹션 id> [--scope <관리번호 id>] | --project-none "<이유>") --nature <dev|partner|scm|brand|client|other> [--business <회사 이름표>]
 ```
 - 🔴 여기에는 `--body-file` 을 붙이지 않는다 — 서버가 노션 저널을 «제목+한줄 요약»으로 따로 다시 색인하므로, 본문을 보내면 둘이 번갈아 덮어쓴다.
   (그래서 노션 회사의 «핵심 결정» 꼬리표는 노션 본문에 붙지 않는다 — 위 «핵심 결정» 줄 쓰는 법은 사람이 읽을 때를 위해 그대로 지킨다)

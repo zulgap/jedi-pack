@@ -78,8 +78,9 @@ Without one the command **stops with exit code 3** and saves nothing (otherwise 
 4. Never pass both flags. The reason must not be empty.
 
 ```
-f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>" --object-none "판단OS 개발 일반" --nature dev
+f="$HOME/.claude/zulgap/journal-ingest.js"; [ -f "$f" ] || f="$HOME/.claude/plugins/marketplaces/zulgap-team-pack/journal-ingest.js"; node "$f" "<page_id>" "<title>" "<one-line summary>" --object-none "판단OS 개발 일반" --project-none "판단OS 개발 일반" --nature dev
 ```
+- `--project <section id>` or `--project-none "<reason>"` is required too (2026-11-05). If `list_projects` shows a section for this work, use `--project <id>`; otherwise keep the reason. Missing → exit code 3.
 - `--nature dev` is required too (2026-10-17): dev work is `dev`. Only if the session was really something else
   (warehouse/forwarder partner work → `partner`, ordering/stock/import cost → `scm`, ad/detail page/copy/price → `brand`,
   client agency work → `client`, anything else → `other`) use that value. Missing or unknown value → exit code 3.
