@@ -28,7 +28,7 @@ f="$HOME/.claude/zulgap/onboard-check.js"; [ -f "$f" ] && node "$f" --json --no-
 ```
 **서버 도구 5개** — 회사 번호를 넣지 않는다(토큰 기준 자동. 관리자만 `read_tenant_id` 로 회사를 고른다)
 - `get_reply_queue({status:"open", limit:30})` — 내 일
-- `get_project_progress({})` — `unassigned` 만 읽는다
+- `get_project_progress({})` — `unassigned`·`deal_candidates` 만 읽는다
 - `get_shipments({mine:true})` — 내 진행 중 선적
 - `get_company_context({mistakes:true})` — 판단으로 안 남은 실수
 - `get_watch_summary({})` — 감시 한 줄
@@ -61,15 +61,17 @@ f="$HOME/.claude/zulgap/onboard-check.js"; [ -f "$f" ] && node "$f" --json --no-
 📌 WR-ZG-2026-1103-18 네이버 블로그 재발행 · 기한 11/5
    …외 1건
 📌 프로젝트 미정 3건 (기한 지남 1) — 미니앱 할 일 탭에서 정리
+📁 «대륙유통 2단계 용역» 계약 — 프로젝트로 관리할까요?
 🚢 진행 중 선적 2건 — 에이엔에너지 부킹(마감 D-2) · 판정 안 한 날짜 후보 3개
 
 🛡 감시 1개 · 열린 이상 0건 · 감시 정상
 ```
 
-**하드 리밋**: 할 일 5줄 · 후보 5줄 · 선적 3건 · 전체 15줄 안팎. 넘으면 「…외 N건」(조용히 자르지 않는다).
+**하드 리밋**: 할 일 5줄 · 후보 5줄 · 계약 후보 3줄 · 선적 3건 · 전체 15줄 안팎. 넘으면 「…외 N건」(조용히 자르지 않는다).
 
 - **내 일**: `<code> 제목 · 기한 <due_at>` — 기한 빠른 순. 본인 일을 더 물으면 `jedi-work` 스킬을 부른다(절차를 여기 다시 적지 않는다).
 - **프로젝트 미정**: `unassigned.count` 0 이면 줄 없음 · 숫자는 응답 그대로 · 목록을 펼치지 않는다. 「정리해줘」 하면 한 건씩 여쭙고 `set_work_request_project`.
+- **계약 후보**: `deal_candidates.count` 0 이면 줄 없음(null 이면 「못 읽음」 — 0건으로 말하지 않는다). 있으면 계약마다 `📁 «<name>» 계약 — 프로젝트로 관리할까요?` (최대 3줄 · 계약된 지 14일 안인데 프로젝트가 없는 것 · 서버가 내 담당 섹션 것만 준다). 「응」이면 `save_project_plan`(how=shipment → `target_shipment_id`=shipment_ids[0] · how=deal → `target_deal_id`=deal_id · 섹션 = project_id · 단계는 여쭤서) 미리보기 → 「응」 → 확정. 「아니」면 그대로 둔다(14일 뒤 저절로 빠진다). 🔴 혼자 만들지 않는다 · 반복 운영 일은 만들지 않는다.
 - **선적**: 응답에 `mine:true` 가 없으면 옛 서버 응답이다 — 줄 없음. `count` 0 이면 줄 없음. `slack_days` 작은 순 · 후보를 여기서 판정하지 않는다.
 - **감시 줄**: `watchers` 가 있으면 `line` 을 그대로 쓴다(다시 판정하지 않는다 · 덧붙이지 않는다). 비어 있으면 줄 없음 — 이 회사엔 아직 감시가 안 돈다.
 - **설치**: `"ready":false` 면 맨 위에 그 파일을 `--no-report` 로 돌려 나온 꼭 필요한 항목 **하나**의 3줄 + 「이것만 남았습니다. 같이 할까요?」. 선택 항목(`"required":false`)은 먼저 꺼내지 않는다. 출력 없음·오류는 말하지 않는다.

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { loadRules, isExcluded, hitsRule } from './exclude-rule.mjs';
 
 const args = process.argv.slice(2);
 const root = args[0];
@@ -35,23 +36,31 @@ const MAX_READ_BYTES = 30 * 1024 * 1024; // 30MB 넘는 문서는 사람에게 �
 
 // 🔑 사람이 정한 «넣지 않을 폴더» 규칙 — 자료 폴더 맨 위의 .jedi-ingest.json (폴더와 함께 다닌다)
 //   { "exclude": ["계약서", "인사/급여"] } — 맨 위 기준 상대경로 접두. 서버에는 «넣지 않기» 칸이 없어 여기 둔다.
-const RULE_FILE = path.join(root, '.jedi-ingest.json');
+// 판정은 exclude-rule.mjs 한 벌(쌓기 직전 outbox-write 도 같은 판정으로 다시 본다).
 let exclude = [];
-try { exclude = (JSON.parse(fs.readFileSync(RULE_FILE, 'utf8')).exclude || []).map(x => String(x).replace(/\\/g, '/').replace(/\/+$/, '')); } catch { /* 규칙 없음 = 첫 실행 */ }
-const excluded = rel => exclude.some(x => rel === x || rel.startsWith(x + '/'));
+try { exclude = loadRules(root); } catch (e) {
+  console.error(`넣지 않을 폴더 규칙(.jedi-ingest.json)을 읽지 못해 멈춥니다: ${e && e.message}`);
+  process.exit(2);
+}
+const excluded = rel => isExcluded(rel, exclude);
 
 function md5(file) {
   return crypto.createHash('md5').update(fs.readFileSync(file)).digest('hex');
 }
 
 const files = [];
+// @AI:CONSTRAINT 🔴 파일 하나 못 읽었다고 통째로 죽지 않고, 예외 문구(전체 경로)를 화면에 내지 않는다 — 넣지 않을 폴더 이름이 대화 기록에 남는다. 수만 센다.
+let unreadable = 0;
 (function walk(dir) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { unreadable++; return; }
+  for (const e of entries) {
     if (e.name.startsWith('~$') || e.name === '.DS_Store' || e.name === 'Thumbs.db' || e.name === '.jedi-ingest.json') continue;
     const full = path.join(dir, e.name);
     if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
     if (!e.isFile()) continue;
-    const st = fs.statSync(full);
+    let st;
+    try { st = fs.statSync(full); } catch (_) { unreadable++; continue; }
     const rel = path.relative(root, full).split(path.sep).join('/');
     const ext = path.extname(e.name).toLowerCase();
     const top = rel.includes('/') ? rel.split('/')[0] : '(맨 위)';
@@ -60,8 +69,13 @@ const files = [];
     else if (READ[ext] && st.size <= MAX_READ_BYTES) suggest = { action: 'read', extractor: READ[ext] };
     else if (READ[ext]) suggest = { action: 'ask', reason: 'too_large' };
     else suggest = { action: 'skip', reason: SKIP[ext] || 'unknown_type' };
+    // 넣지 않을 파일은 내용을 읽지 않는다(해시도 안 만든다).
+    let hash = null;
+    if (st.size <= MAX_READ_BYTES && suggest.reason !== 'excluded_by_rule') {
+      try { hash = md5(full); } catch (_) { unreadable++; continue; }
+    }
     files.push({ file_path: rel, ext, size_bytes: st.size, mtime: st.mtime.toISOString(),
-      file_hash: st.size <= MAX_READ_BYTES ? md5(full) : null, bundle: top, suggest });
+      file_hash: hash, bundle: top, suggest });
   }
 })(root);
 
@@ -75,6 +89,8 @@ for (const f of files) {
 const result = {
   root: path.resolve(root),
   rules: { exclude },
+  rules_no_hit: exclude.filter(rule => !files.some(f => hitsRule(f.file_path, rule))).length, // 아무것도 안 걸린 규칙 수 — 오타면 제외가 조용히 안 먹는다
+  unreadable,
   connector_id: `pc-${host}`,
   scan_batch: crypto.randomUUID(),
   total: files.length,
