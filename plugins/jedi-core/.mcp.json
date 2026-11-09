@@ -4,16 +4,16 @@
     "url": "https://mcp.notion.com/mcp"
   },
   "pptx": {
-    "command": "uvx",
-    "args": ["--with", "mcp<2", "--from", "office-powerpoint-mcp-server", "ppt_mcp_server"]
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-lazy.mjs", "pptx", "--", "uvx", "--with", "mcp<2", "--from", "office-powerpoint-mcp-server", "ppt_mcp_server"]
   },
   "hwp-mcp": {
-    "command": "uvx",
-    "args": ["--with", "mcp<2", "--from", "hwp-mcp", "hwp-mcp"]
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-lazy.mjs", "hwp-mcp", "--", "uvx", "--with", "mcp<2", "--from", "hwp-mcp", "hwp-mcp"]
   },
   "playwright": {
     "command": "node",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.84"]
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-lazy.mjs", "playwright", "--", "node", "${CLAUDE_PLUGIN_ROOT}/scripts/playwright-mcp.mjs", "@playwright/mcp@0.0.84"]
   },
   "jedi-work-chrome": {
     "command": "npx",
